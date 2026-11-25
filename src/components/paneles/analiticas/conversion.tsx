@@ -2,7 +2,7 @@
 
 import { Info } from "lucide-react";
 import type { Bloque, BloqueConTope } from "@/lib/paneles-data";
-import type { Vista } from "@/lib/paneles/canal";
+import { tiendaVisible, type Vista } from "@/lib/paneles/canal";
 import type { PanelConversaciones, PanelVentas } from "@/lib/paneles/parse";
 import { PanelBloque } from "@/components/paneles/panel-marco";
 import { tasaDeConversion, tasaDeRegreso } from "./datos";
@@ -211,8 +211,8 @@ function ClientesQueRegresan({ dato, vista }: { dato: PanelVentas; vista: Vista 
           <p className="pn-subtitulo">
             «Regresa» quien ya había comprado antes del período o ya existía en SAINT.
             {dato.recurrentes.genericos_excluidos > 0 &&
-              ` No se cuentan ${formatoEntero(dato.recurrentes.genericos_excluidos)} clientes genéricos del mostrador.`}
-            {vista === "resumen" && " En el resumen, quien compró en los dos canales cuenta en cada uno."}
+              ` No se cuentan ${formatoEntero(dato.recurrentes.genericos_excluidos)} clientes genéricos${tiendaVisible() ? " del mostrador" : ""}.`}
+            {vista === "resumen" && tiendaVisible() && " En el resumen, quien compró en los dos canales cuenta en cada uno."}
           </p>
         </div>
       )}

@@ -62,6 +62,14 @@ vi.mock("@/lib/ai/bcv-fetch", () => ({
   fetchBcvHtml: (url: string) => fetchBcvHtmlMock(url),
 }));
 
+// El estado persistente de la lectura (T3, 21/11/2026) tiene su propia
+// suite en bcv-cache.test.ts; acá se mockea como "sin tabla" (null) para que
+// estos casos sigan probando solo el parseo del HTML real.
+vi.mock("@/lib/ai/bcv-status", () => ({
+  registrarIntentoBcv: async () => null,
+  leerEstadoBcv: async () => null,
+}));
+
 import { getBcvRate, resetBcvFailureBackoffForTests } from "@/lib/ai/bcv";
 
 interface EstadoSupabase {

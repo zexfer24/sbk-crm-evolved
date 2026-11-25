@@ -3125,6 +3125,12 @@
   background: var(--lm-sunken);
   color: var(--lm-ink-soft);
   font-size: 12px;
+  /* La barra es estrecha: sin esto un hijo largo (la fecha en alerta) ensancha el chip. */
+  min-width: 0;
+}
+
+.crm-bcv > svg {
+  flex-shrink: 0;
 }
 
 .crm-bcv-label {
@@ -3147,6 +3153,12 @@
   margin-left: auto;
   color: var(--lm-muted);
   font-size: 11px;
+  /* En alerta dice "sin actualizar desde 18 nov., 6:00 p. m.": si no entra se
+     recorta; el texto completo queda en el title y el aria-label del chip. */
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Sin conexión con el BCV se muestra la última guardada: se avisa, no se oculta. */
@@ -3157,6 +3169,36 @@
 
 .crm-bcv[data-stale="true"] .crm-bcv-rate {
   color: var(--lm-wait-ink);
+}
+
+/* Más de 8 h sin una lectura buena del BCV (19/11/2026: dos días sin que nadie
+   lo viera). Rojo de peligro y no el ámbar de arriba, y gana a data-stale
+   porque viene después. Los tintes siguen al tema por --lm-hot-rgb/--lm-hot-ink. */
+.crm-bcv[data-alerta="true"] {
+  background: rgb(var(--lm-hot-rgb) / 0.12);
+  color: var(--lm-hot-ink);
+}
+
+.crm-bcv[data-alerta="true"] .crm-bcv-rate,
+.crm-bcv[data-alerta="true"] .crm-bcv-date {
+  color: var(--lm-hot-ink);
+}
+
+/* En alerta el aviso baja a su propia línea: en 316 px de bandeja, en la misma
+   línea que la tasa se cortaba en "sin actualizar desde 18…" y se perdía
+   justo la fecha y la hora, que es lo que hay que ver (medido con Geist el
+   21/11/2026). Dos líneas en una píldora de radio 999px se ven como un óvalo:
+   por eso baja el radio. */
+.crm-bcv[data-alerta="true"] {
+  flex-wrap: wrap;
+  row-gap: 2px;
+  border-radius: 12px;
+}
+
+.crm-bcv[data-alerta="true"] .crm-bcv-date {
+  flex-basis: 100%;
+  margin-left: 0;
+  white-space: normal;
 }
 
 /* --------------------------------------------------------------------------

@@ -278,6 +278,19 @@
   color: var(--lm-wait-ink);
 }
 
+/* Tasa BCV con más de 8 h sin una lectura buena (alerta): mismo rojo de peligro
+   que el chip de la bandeja (.crm-bcv[data-alerta="true"]). Va después de
+   data-stale porque la tarjeta lleva los dos atributos y tiene que ganar el rojo. */
+.cli-stat[data-alerta="true"] {
+  border-color: rgb(var(--lm-hot-rgb) / 0.45);
+  background: rgb(var(--lm-hot-rgb) / 0.12);
+}
+
+.cli-stat[data-alerta="true"] .cli-stat-value,
+.cli-stat[data-alerta="true"] .cli-stat-note {
+  color: var(--lm-hot-ink);
+}
+
 .cli-columns {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr);

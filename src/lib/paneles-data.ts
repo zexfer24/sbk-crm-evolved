@@ -13,7 +13,7 @@ import {
   type PanelVentas,
   type PanelVentasActivas,
 } from "@/lib/paneles/parse";
-import { topeMensajes } from "@/lib/paneles/periodos";
+import { TEXTO_INICIO_PANELES, topeMensajes } from "@/lib/paneles/periodos";
 
 /**
  * Lecturas de los paneles (Dashboard, Analíticas, Asesores; plan "Paneles",
@@ -44,6 +44,21 @@ export type Bloque<T> =
 
 /** Los bloques que leen `messages` avisan si el rango se recortó al tope de 92 días. */
 export type BloqueConTope<T> = Bloque<T> & { recortado: boolean };
+
+/**
+ * Bloque para un rango que entero cae antes de `INICIO_PANELES`: no se llama a
+ * la RPC (no hay nada que leer ahí) y la pantalla ve un `no_disponible` con el
+ * texto del piso. Plan "Los paneles cuentan desde el lunes 16/11/2026",
+ * 21/11/2026.
+ */
+export function bloqueAntesDelInicio<T>(): Bloque<T> {
+  return { ok: false, motivo: "no_disponible", detalle: TEXTO_INICIO_PANELES };
+}
+
+/** Variante de `bloqueAntesDelInicio` para las lecturas con tope de 92 días. */
+export function bloqueConTopeAntesDelInicio<T>(): BloqueConTope<T> {
+  return { ...bloqueAntesDelInicio<T>(), recortado: false };
+}
 
 /** Función de la RPC inexistente: la migración M4 no está aplicada en esa base. */
 const FUNCION_INEXISTENTE = new Set(["PGRST202", "42883"]);

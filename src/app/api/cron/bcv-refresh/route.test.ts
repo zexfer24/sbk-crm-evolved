@@ -10,7 +10,8 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
  * `@/lib/supabase/admin` arrastra el cliente real de supabase-js.
  */
 
-const { getBcvRateMock, createAdminClientMock } = vi.hoisted(() => ({
+const { getBcvRateMock, createAdminClientMock, simularArmadoPorAiaMock } = vi.hoisted(() => ({
+  simularArmadoPorAiaMock: vi.fn(),
   getBcvRateMock: vi.fn(async () => ({
     rate: 855.6625,
     rateDate: "2026-09-25",
@@ -22,6 +23,13 @@ const { getBcvRateMock, createAdminClientMock } = vi.hoisted(() => ({
 
 vi.mock("@/lib/ai/bcv", () => ({
   getBcvRate: getBcvRateMock,
+  BCV_URL: "https://www.bcv.org.ve/",
+}));
+
+// El simulacro (T3, 21/11/2026) delega en bcv-fetch.ts (lo escribe T2); acá
+// se mockea con la forma exacta de su contrato.
+vi.mock("@/lib/ai/bcv-fetch", () => ({
+  simularArmadoPorAia: simularArmadoPorAiaMock,
 }));
 
 vi.mock("@/lib/supabase/admin", () => ({
@@ -30,8 +38,8 @@ vi.mock("@/lib/supabase/admin", () => ({
 
 import { POST } from "./route";
 
-function sendRequest(headers: Record<string, string> = {}) {
-  return new Request("http://crm.example/api/cron/bcv-refresh", {
+function sendRequest(headers: Record<string, string> = {}, query = "") {
+  return new Request(`http://crm.example/api/cron/bcv-refresh${query}`, {
     method: "POST",
     headers,
   });
@@ -41,6 +49,7 @@ describe("POST /api/cron/bcv-refresh — el portón que fuerza la relectura del 
   beforeEach(() => {
     getBcvRateMock.mockClear();
     createAdminClientMock.mockClear();
+    simularArmadoPorAiaMock.mockReset();
     getBcvRateMock.mockResolvedValue({
       rate: 855.6625,
       rateDate: "2026-09-25",
@@ -130,5 +139,75 @@ describe("POST /api/cron/bcv-refresh — el portón que fuerza la relectura del 
     } finally {
       vi.unstubAllEnvs();
     }
+  });
+
+  describe("?simulacro=aia — verificación del VPS tras el deploy", () => {
+    it("con token llama a simularArmadoPorAia(BCV_URL), NO a getBcvRate, y responde 200 con el resultado", async () => {
+      vi.stubEnv("CRON_SECRET", "secreto-cron");
+      const resultado = {
+        ok: true as const,
+        armadoPorAia: true,
+        intermedio: { subject: "CN=DV R36", sha256: "abc", url: "http://ca.example/r36.cer" },
+      };
+      simularArmadoPorAiaMock.mockResolvedValue(resultado);
+
+      try {
+        const response = await POST(sendRequest({ authorization: "Bearer secreto-cron" }, "?simulacro=aia"));
+        const body = await response.json();
+
+        expect(response.status).toBe(200);
+        expect(body).toEqual({ simulacro: "aia", ...resultado });
+        expect(simularArmadoPorAiaMock).toHaveBeenCalledWith("https://www.bcv.org.ve/");
+        expect(getBcvRateMock).not.toHaveBeenCalled();
+        // Nada se escribe en la base: ni siquiera se crea el cliente admin.
+        expect(createAdminClientMock).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it("si el simulacro no arma la cadena responde 502 con el motivo", async () => {
+      vi.stubEnv("CRON_SECRET", "secreto-cron");
+      simularArmadoPorAiaMock.mockResolvedValue({ ok: false as const, motivo: "no se pudo descargar el intermedio" });
+
+      try {
+        const response = await POST(sendRequest({ authorization: "Bearer secreto-cron" }, "?simulacro=aia"));
+        const body = await response.json();
+
+        expect(response.status).toBe(502);
+        expect(body).toEqual({ simulacro: "aia", ok: false, motivo: "no se pudo descargar el intermedio" });
+        expect(getBcvRateMock).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it("sin token sigue siendo 401 y no simula nada", async () => {
+      vi.stubEnv("CRON_SECRET", "secreto-cron");
+
+      try {
+        const response = await POST(sendRequest({}, "?simulacro=aia"));
+
+        expect(response.status).toBe(401);
+        expect(simularArmadoPorAiaMock).not.toHaveBeenCalled();
+        expect(getBcvRateMock).not.toHaveBeenCalled();
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
+
+    it("otro valor de simulacro se ignora: corre la relectura de siempre", async () => {
+      vi.stubEnv("CRON_SECRET", "secreto-cron");
+
+      try {
+        const response = await POST(sendRequest({ authorization: "Bearer secreto-cron" }, "?simulacro=otro"));
+
+        expect(response.status).toBe(200);
+        expect(simularArmadoPorAiaMock).not.toHaveBeenCalled();
+        expect(getBcvRateMock).toHaveBeenCalledTimes(1);
+      } finally {
+        vi.unstubAllEnvs();
+      }
+    });
   });
 });

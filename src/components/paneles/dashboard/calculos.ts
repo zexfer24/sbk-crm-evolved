@@ -1,11 +1,17 @@
 import { businessStatus, type BusinessHours, type DayKey } from "@/lib/business-hours";
 import type { Vista } from "@/lib/paneles/canal";
 import {
+  EQUIPOS_ACTIVA,
+  ORIGENES_ACTIVA,
   sumaCanales,
   type CanalId,
   type CanalVentas,
+  type EquipoActiva,
+  type MontoCantidad,
+  type OrigenActiva,
   type PanelVentas,
   type PanelVentasActivas,
+  type VentanaActiva,
 } from "@/lib/paneles/parse";
 import { crmDayKey, shiftDayKey, todayKey } from "@/lib/sales-day";
 import { crmMinuteOfDay, crmWeekday } from "@/lib/time-zone";
@@ -16,14 +22,6 @@ import { crmMinuteOfDay, crmWeekday } from "@/lib/time-zone";
  * reloj propio (todo recibe `ahora`). Regla de siempre: `null` es "no se puede
  * calcular" y la pantalla pinta «—», nunca un 0 que parezca verdad.
  */
-
-/** Los envíos a SAINT se registran desde esta fecha (medianoche de Caracas del 26/10/2026). */
-export const FECHA_INICIO_ENVIOS = new Date("2026-10-26T04:00:00Z");
-
-/** Un período que arranca antes del 26/10 incluye días sin envíos registrados: la pantalla lo avisa. */
-export function periodoTocaAntesDeEnvios(desde: Date): boolean {
-  return desde.getTime() < FECHA_INICIO_ENVIOS.getTime();
-}
 
 function centavos(n: number): number {
   return Math.round(n * 100) / 100;
@@ -58,11 +56,52 @@ export function variacion(actual: number | null, previo: number | null): number 
 // Ventas activas
 // ---------------------------------------------------------------------------
 
+/**
+ * Los orígenes que alimentan cada canal (22/11/2026). El canal sale del flujo:
+ * un presupuesto de Inventario es de tienda aunque lo arme un asesor online;
+ * carritos y presupuestos del chat son online. El equipo (rol de quien armó la
+ * venta) es otra cosa y viaja aparte en `por_equipo`.
+ */
+export const ORIGENES_DE_CANAL: Record<CanalId, readonly OrigenActiva[]> = {
+  online: ["carrito_chat", "presupuesto_chat"],
+  tienda: ["presupuesto_inventario"],
+};
+
+/** Los orígenes que cuentan en una vista: los tres en el resumen, los del canal en un canal. */
+export function origenesDeVista(vista: Vista): readonly OrigenActiva[] {
+  return vista === "resumen" ? ORIGENES_ACTIVA : ORIGENES_DE_CANAL[vista];
+}
+
+export const ETIQUETA_ORIGEN: Record<OrigenActiva, string> = {
+  carrito_chat: "Carritos del chat",
+  presupuesto_chat: "Presupuestos del chat",
+  presupuesto_inventario: "Presupuestos de Inventario",
+};
+
+export const ETIQUETA_EQUIPO: Record<EquipoActiva, string> = {
+  online: "Asesores online",
+  tienda: "Tienda (caja)",
+  sin_dato: "Sin dato",
+};
+
+export const ETIQUETA_VENTANA: Record<VentanaActiva, string> = {
+  abierta: "Abierta",
+  por_cerrar: "Por cerrar",
+  cerrada: "Cerrada",
+  no_aplica: "Sin chat",
+};
+
 export interface DesgloseActivas {
   monto: number | null;
   cantidad: number;
   presupuestos: { monto: number | null; cantidad: number };
   carritos: { monto: number | null; cantidad: number };
+  /** `null` en los cuatro de abajo con una base que todavía no trae el desglose. */
+  porOrigen: Record<OrigenActiva, MontoCantidad> | null;
+  porEquipo: Record<EquipoActiva, MontoCantidad> | null;
+  porVentana: Record<VentanaActiva, MontoCantidad> | null;
+  /** Ventas que quedaron fuera de la ventana de 48 h (no se cuentan arriba). */
+  fuera: number | null;
 }
 
 function restar(a: number | null, b: number | null): number | null {
@@ -70,20 +109,74 @@ function restar(a: number | null, b: number | null): number | null {
   return centavos(Math.max(0, a - b));
 }
 
+/** Suma celdas: el monto es `null` solo si TODAS lo son; la cantidad siempre suma. */
+function sumarCeldas(celdas: MontoCantidad[]): MontoCantidad {
+  const conMonto = celdas.filter((c) => c.monto !== null);
+  return {
+    monto: conMonto.length === 0 ? null : centavos(conMonto.reduce((t, c) => t + (c.monto as number), 0)),
+    cantidad: celdas.reduce((t, c) => t + c.cantidad, 0),
+  };
+}
+
+const celdaVacia = (): MontoCantidad => ({ monto: null, cantidad: 0 });
+const soloMontoYCantidad = (c: MontoCantidad): MontoCantidad => ({ monto: c.monto, cantidad: c.cantidad });
+
 /**
- * Lo que sigue en curso según la vista. El contrato solo trae el reparto
+ * Lo que sigue en curso según la vista. Con el desglose de la base (22/11/2026)
+ * todo sale de sus agregados: por canal se suman SOLO los orígenes del canal
+ * (canal != equipo: un presupuesto de Inventario armado por un asesor online es
+ * de la vista Tienda y suma al equipo «Asesores online» solo en el resumen).
+ *
+ * Sin desglose (base vieja) el contrato solo trae el reparto
  * presupuestos/carritos del total; por canal viene un monto y una cantidad.
  * Como los carritos son SIEMPRE del chat (online) y los presupuestos de tienda
  * son todo lo de tienda: tienda = solo presupuestos; online = los carritos más
  * lo que sobra del canal.
  */
 export function desgloseActivas(a: PanelVentasActivas, vista: Vista): DesgloseActivas {
+  const dg = a.desglose;
+  if (dg) {
+    if (vista === "resumen") {
+      return {
+        monto: a.total,
+        cantidad: a.presupuestos.cantidad + a.carritos.cantidad,
+        presupuestos: { monto: a.presupuestos.monto, cantidad: a.presupuestos.cantidad },
+        carritos: { monto: a.carritos.monto, cantidad: a.carritos.cantidad },
+        porOrigen: {
+          carrito_chat: soloMontoYCantidad(dg.por_origen.carrito_chat),
+          presupuesto_chat: soloMontoYCantidad(dg.por_origen.presupuesto_chat),
+          presupuesto_inventario: soloMontoYCantidad(dg.por_origen.presupuesto_inventario),
+        },
+        porEquipo: dg.por_equipo,
+        porVentana: dg.por_ventana,
+        fuera: dg.fuera_de_ventana.carritos + dg.fuera_de_ventana.presupuestos,
+      };
+    }
+    const delCanal = ORIGENES_DE_CANAL[vista];
+    const porEquipo = {} as Record<EquipoActiva, MontoCantidad>;
+    for (const e of EQUIPOS_ACTIVA) porEquipo[e] = sumarCeldas(delCanal.map((o) => dg.por_origen_equipo[o][e]));
+    const porOrigen = {} as Record<OrigenActiva, MontoCantidad>;
+    for (const o of ORIGENES_ACTIVA) porOrigen[o] = delCanal.includes(o) ? soloMontoYCantidad(dg.por_origen[o]) : celdaVacia();
+    return {
+      monto: a.por_canal[vista].monto,
+      cantidad: a.por_canal[vista].cantidad,
+      presupuestos: sumarCeldas(delCanal.filter((o) => o !== "carrito_chat").map((o) => dg.por_origen[o])),
+      carritos: vista === "online" ? soloMontoYCantidad(dg.por_origen.carrito_chat) : { monto: 0, cantidad: 0 },
+      porOrigen,
+      porEquipo,
+      porVentana: dg.por_canal_ventana[vista],
+      fuera: delCanal.reduce((t, o) => t + dg.fuera_de_ventana.por_origen[o], 0),
+    };
+  }
+
+  const sinDesglose = { porOrigen: null, porEquipo: null, porVentana: null, fuera: null };
   if (vista === "resumen") {
     return {
       monto: a.total,
       cantidad: a.presupuestos.cantidad + a.carritos.cantidad,
       presupuestos: { monto: a.presupuestos.monto, cantidad: a.presupuestos.cantidad },
       carritos: { monto: a.carritos.monto, cantidad: a.carritos.cantidad },
+      ...sinDesglose,
     };
   }
   const canal = a.por_canal[vista];
@@ -93,6 +186,7 @@ export function desgloseActivas(a: PanelVentasActivas, vista: Vista): DesgloseAc
       cantidad: canal.cantidad,
       presupuestos: { monto: canal.monto, cantidad: canal.cantidad },
       carritos: { monto: 0, cantidad: 0 },
+      ...sinDesglose,
     };
   }
   return {
@@ -100,7 +194,30 @@ export function desgloseActivas(a: PanelVentasActivas, vista: Vista): DesgloseAc
     cantidad: canal.cantidad,
     presupuestos: { monto: restar(canal.monto, a.carritos.monto), cantidad: Math.max(0, canal.cantidad - a.carritos.cantidad) },
     carritos: { monto: a.carritos.monto, cantidad: a.carritos.cantidad },
+    ...sinDesglose,
   };
+}
+
+/**
+ * Los orígenes que se pintan como fila en la tarjeta y en la hoja (22/11/2026):
+ * los de la vista, salvo los presupuestos del chat mientras no haya ninguno
+ * (hoy en producción todo son carritos y esa fila sería puro ruido). El
+ * presupuesto de Inventario sí se pinta en el resumen aunque esté en 0, y no
+ * en la vista Online, que no lo cuenta. Sin desglose (base vieja) no hay filas.
+ */
+export function origenesConFila(d: DesgloseActivas, vista: Vista): OrigenActiva[] {
+  const porOrigen = d.porOrigen;
+  if (!porOrigen) return [];
+  return origenesDeVista(vista).filter((o) => o !== "presupuesto_chat" || porOrigen[o].cantidad > 0);
+}
+
+/**
+ * «Ventana abierta» de la tarjeta: lo que todavía se puede escribir al cliente
+ * sin plantilla, o sea abierta MÁS por cerrar. El monto es `null` solo si los
+ * dos lo son.
+ */
+export function ventanaEscribible(porVentana: Record<VentanaActiva, MontoCantidad>): MontoCantidad {
+  return sumarCeldas([porVentana.abierta, porVentana.por_cerrar]);
 }
 
 /** Los ítems de la vista, del más viejo al más nuevo (el servidor ya los manda así; no se confía). */
@@ -113,18 +230,33 @@ export function itemsDeVista(a: PanelVentasActivas, vista: Vista): PanelVentasAc
 const DIA_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Cuántos ítems sin enviar llevan más de 7 días. En el resumen lo dice el tramo
- * "30d" (el último: más de 7 días); el desglose por tramo no viene por canal,
- * así que en un canal se mira la lista de los 30 más viejos, que es donde
- * estarían.
+ * Lo que lleva más de 24 h sin moverse: sale del conteo de 48 h en menos de un
+ * día (22/11/2026). En el resumen con desglose lo dice el tramo «48h» de la
+ * base; en un canal, o sin desglose, se cuentan los ítems de la vista (la lista
+ * trae hasta 300, más que lo que cabe en 48 h).
  */
-export function cantidadItemsViejos(a: PanelVentasActivas, vista: Vista, ahora: Date): number {
-  if (vista === "resumen") return a.antiguedad.find((t) => t.tramo === "30d")?.cantidad ?? 0;
-  return itemsDeVista(a, vista).filter((i) => ahora.getTime() - new Date(i.desde).getTime() > 7 * DIA_MS).length;
+export function cantidadPorVencer(a: PanelVentasActivas, vista: Vista, ahora: Date): number {
+  if (vista === "resumen" && a.desglose) return a.desglose.tramos_48h.find((t) => t.tramo === "48h")?.cantidad ?? 0;
+  return itemsDeVista(a, vista).filter((i) => ahora.getTime() - new Date(i.desde).getTime() > DIA_MS).length;
 }
 
-export function hayItemsViejos(a: PanelVentasActivas, vista: Vista, ahora: Date): boolean {
-  return cantidadItemsViejos(a, vista, ahora) > 0;
+const HORA_MS = 60 * 60 * 1000;
+
+/**
+ * Cuánto le queda a la ventana de 24 h de WhatsApp de una venta activa:
+ * «quedan 3 h» (hacia abajo), «queda menos de 1 h», «Cerrada», «Sin chat» o «—»
+ * si no se sabe. Una ventana que ya pasó pero todavía figura abierta (desfase
+ * de segundos entre la base y el reloj) se lee «queda menos de 1 h».
+ */
+export function textoVentana(item: PanelVentasActivas["items"][number], ahora: Date): string {
+  if (item.ventana === "cerrada") return ETIQUETA_VENTANA.cerrada;
+  if (item.ventana === "no_aplica") return ETIQUETA_VENTANA.no_aplica;
+  if (item.ventana === "abierta" || item.ventana === "por_cerrar") {
+    if (!item.ventana_hasta) return "—";
+    const horas = Math.floor((new Date(item.ventana_hasta).getTime() - ahora.getTime()) / HORA_MS);
+    return horas < 1 ? "queda menos de 1 h" : `quedan ${horas} h`;
+  }
+  return "—";
 }
 
 /** "20 min", "5 h", "3 d": la unidad más grande que cabe. */

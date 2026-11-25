@@ -11,8 +11,24 @@ vi.mock("@/lib/ai/bcv-fetch", () => ({
   fetchBcvHtml: (...args: unknown[]) => fetchBcvHtmlMock(...args),
 }));
 
+// Estado persistente de la lectura (T3, 21/11/2026): se mockea entero. Por
+// defecto "no hay tabla" (lectura y registro devuelven null), que es el
+// comportamiento de antes de la migración; cada test que prueba el registro
+// fija lo que devuelve.
+const registrarMock = vi.fn();
+const leerEstadoMock = vi.fn();
+vi.mock("@/lib/ai/bcv-status", () => ({
+  registrarIntentoBcv: (...args: unknown[]) => registrarMock(...args),
+  leerEstadoBcv: (...args: unknown[]) => leerEstadoMock(...args),
+}));
+
 import { log } from "@/lib/log";
-import { BCV_FAILURE_BACKOFF_MS, getBcvRate, resetBcvFailureBackoffForTests } from "@/lib/ai/bcv";
+import {
+  BCV_FALLOS_PARA_ALERTA,
+  BCV_FAILURE_BACKOFF_MS,
+  getBcvRate,
+  resetBcvFailureBackoffForTests,
+} from "@/lib/ai/bcv";
 
 interface FakeCachedRow {
   rate_date: string;
@@ -100,7 +116,14 @@ describe("getBcvRate — caché de la tasa BCV", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     fetchBcvHtmlMock.mockReset();
+    registrarMock.mockReset();
+    registrarMock.mockResolvedValue(null);
+    leerEstadoMock.mockReset();
+    leerEstadoMock.mockResolvedValue(null);
     resetBcvFailureBackoffForTests();
+    // Los logs de fallo salen por stderr: se silencian y se espían por evento.
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
   });
 
   afterEach(() => {
@@ -121,7 +144,7 @@ describe("getBcvRate — caché de la tasa BCV", () => {
     const result = await llamar(client);
 
     expect(fetchBcvHtmlMock).not.toHaveBeenCalled();
-    expect(result).toEqual({ rate: 800, rateDate: "2026-09-24", isStale: false, refreshed: false });
+    expect(result).toEqual({ rate: 800, rateDate: "2026-09-24", isStale: false, refreshed: false, alerta: null });
   });
 
   it("con fetched_at null (fila del seed, o sin ninguna fila) sale a la red aunque haya una tasa cacheada", async () => {
@@ -156,7 +179,7 @@ describe("getBcvRate — caché de la tasa BCV", () => {
         fetched_at: ahora.toISOString(),
       },
     ]);
-    expect(result).toEqual({ rate: 775.3356, rateDate: "2026-08-22", isStale: false, refreshed: true });
+    expect(result).toEqual({ rate: 775.3356, rateDate: "2026-08-22", isStale: false, refreshed: true, alerta: null });
   });
 
   it("caso del operador: leída a las 18:05 VE con la tasa de mañana ya publicada, usa el fetched_at más reciente y guarda la tasa nueva", async () => {
@@ -190,7 +213,7 @@ describe("getBcvRate — caché de la tasa BCV", () => {
         fetched_at: "2026-09-24T22:05:00.000Z",
       },
     ]);
-    expect(result).toEqual({ rate: 855.6625, rateDate: "2026-09-25", isStale: false, refreshed: true });
+    expect(result).toEqual({ rate: 855.6625, rateDate: "2026-09-25", isStale: false, refreshed: true, alerta: null });
   });
 
   it("página sin Fecha Valor y con fila guardada: cero upserts, devuelve la guardada como vieja y avisa con log.warn", async () => {
@@ -205,7 +228,7 @@ describe("getBcvRate — caché de la tasa BCV", () => {
     const result = await llamar(client);
 
     expect(upserts).toEqual([]);
-    expect(result).toEqual({ rate: 854.46, rateDate: "2026-09-24", isStale: true, refreshed: false });
+    expect(result).toEqual({ rate: 854.46, rateDate: "2026-09-24", isStale: true, refreshed: false, alerta: null });
     expect(warn).toHaveBeenCalledWith("bcv_sin_fecha_valor", expect.objectContaining({ rate: 775.3356 }));
   });
 
@@ -223,12 +246,12 @@ describe("getBcvRate — caché de la tasa BCV", () => {
     const result = await llamar(client);
 
     expect(fetchBcvHtmlMock).not.toHaveBeenCalled();
-    expect(result).toEqual({ rate: 830, rateDate: "2026-09-20", isStale: false, refreshed: false });
+    expect(result).toEqual({ rate: 830, rateDate: "2026-09-20", isStale: false, refreshed: false, alerta: null });
   });
 
   it("si la lectura en vivo falla y hay una fila guardada, devuelve esa fila marcada como vieja sin tocar el upsert", async () => {
     vi.setSystemTime(new Date("2026-08-24T15:00:00Z"));
-    const consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
     fetchBcvHtmlMock.mockRejectedValue(new Error("boom"));
     const { client, upserts } = createFakeSupabase({
       cached: { rate_date: "2026-08-20", usd_to_ves: 770 },
@@ -237,19 +260,24 @@ describe("getBcvRate — caché de la tasa BCV", () => {
 
     const result = await llamar(client);
 
-    expect(result).toEqual({ rate: 770, rateDate: "2026-08-20", isStale: true, refreshed: false });
+    expect(result).toEqual({ rate: 770, rateDate: "2026-08-20", isStale: true, refreshed: false, alerta: null });
     expect(upserts).toEqual([]);
-    expect(consoleErrorSpy).toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(
+      "bcv_lectura_fallida",
+      expect.objectContaining({ fallosSeguidos: 1, motivo: "boom", tasaDe: "2026-08-20" })
+    );
   });
 
-  it("si la lectura en vivo falla y no hay nada guardado, rechaza sin tocar el upsert", async () => {
+  it("si la lectura en vivo falla y no hay nada guardado, rechaza sin tocar el upsert, registra el fallo y avisa con log.error", async () => {
     vi.setSystemTime(new Date("2026-08-24T15:00:00Z"));
-    vi.spyOn(console, "error").mockImplementation(() => {});
+    const error = vi.spyOn(log, "error").mockImplementation(() => {});
     fetchBcvHtmlMock.mockRejectedValue(new Error("boom"));
     const { client, upserts } = createFakeSupabase({ cached: null, lastFetchedAt: null });
 
     await expect(llamar(client)).rejects.toThrow("No hay ninguna tasa BCV guardada");
     expect(upserts).toEqual([]);
+    expect(registrarMock).toHaveBeenCalledWith(false, "boom");
+    expect(error).toHaveBeenCalledWith("bcv_sin_tasa_guardada", { motivo: "boom" });
   });
 
   describe("ventana de fallo (BCV_FAILURE_BACKOFF_MS)", () => {
@@ -322,6 +350,331 @@ describe("getBcvRate — caché de la tasa BCV", () => {
       const result = await llamar(client);
       expect(fetchBcvHtmlMock).toHaveBeenCalledTimes(3);
       expect(result.refreshed).toBe(true);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// T3 (21/11/2026) — el estado de la lectura persiste, se ve y el log no grita
+// cada minuto. Contexto: desde el 19/11/2026 cada lectura falló dos días sin
+// que nadie se enterara (un console.error por minuto y la tasa cargada a mano
+// tapaba hasta `isStale`).
+// ---------------------------------------------------------------------------
+describe("getBcvRate — estado persistente de la lectura (bcv_fetch_status)", () => {
+  /** Fixture "siempre toca releer": la ventana de fallo es lo único que decide. */
+  function fixtureSiempreToca() {
+    return createFakeSupabase({
+      cached: { rate_date: "2026-11-18", usd_to_ves: 100 },
+      lastFetchedAt: "2020-01-01T00:00:00Z",
+    });
+  }
+
+  const registroOk = { fallosSeguidos: 0, fallosPrevios: 0, errorPrevio: null };
+  function registroFallo(fallosSeguidos: number, errorPrevio: string | null = "boom") {
+    return { fallosSeguidos, fallosPrevios: fallosSeguidos - 1, errorPrevio };
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-11-21T15:00:00Z"));
+    fetchBcvHtmlMock.mockReset();
+    registrarMock.mockReset();
+    registrarMock.mockResolvedValue(null);
+    leerEstadoMock.mockReset();
+    leerEstadoMock.mockResolvedValue(null);
+    resetBcvFailureBackoffForTests();
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    vi.spyOn(console, "log").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+  });
+
+  describe("qué intentos se registran", () => {
+    it("un éxito registra ok=true sin error, y si venía de fallos avisa la recuperación", async () => {
+      const info = vi.spyOn(log, "info").mockImplementation(() => {});
+      registrarMock.mockResolvedValue({ fallosSeguidos: 0, fallosPrevios: 12, errorPrevio: "boom" });
+      fetchBcvHtmlMock.mockResolvedValue(HTML_BCV_SIMULADO);
+      const { client } = fixtureSiempreToca();
+
+      const result = await llamar(client);
+
+      expect(registrarMock).toHaveBeenCalledTimes(1);
+      expect(registrarMock).toHaveBeenCalledWith(true, null);
+      expect(result.refreshed).toBe(true);
+      expect(info).toHaveBeenCalledWith("bcv_lectura_recuperada", { fallosPrevios: 12 });
+    });
+
+    it("un éxito sin fallos previos no avisa recuperación", async () => {
+      const info = vi.spyOn(log, "info").mockImplementation(() => {});
+      registrarMock.mockResolvedValue(registroOk);
+      fetchBcvHtmlMock.mockResolvedValue(HTML_BCV_SIMULADO);
+      const { client } = fixtureSiempreToca();
+
+      await llamar(client);
+
+      expect(info).not.toHaveBeenCalledWith("bcv_lectura_recuperada", expect.anything());
+    });
+
+    it("una excepción de la lectura registra ok=false con su texto", async () => {
+      vi.spyOn(log, "warn").mockImplementation(() => {});
+      fetchBcvHtmlMock.mockRejectedValue(new Error("certificado vencido"));
+      const { client } = fixtureSiempreToca();
+
+      await llamar(client);
+
+      expect(registrarMock).toHaveBeenCalledWith(false, "certificado vencido");
+    });
+
+    it("sin Fecha Valor registra fallo con su motivo y conserva lo guardado", async () => {
+      vi.spyOn(log, "warn").mockImplementation(() => {});
+      fetchBcvHtmlMock.mockResolvedValue(HTML_BCV_SIN_FECHA_VALOR);
+      const { client, upserts } = fixtureSiempreToca();
+
+      const result = await llamar(client);
+
+      expect(registrarMock).toHaveBeenCalledWith(false, "La página del BCV no trajo «Fecha Valor».");
+      expect(upserts).toEqual([]);
+      expect(result).toMatchObject({ rate: 100, isStale: true, refreshed: false });
+    });
+
+    it("si el upsert falla cuenta como fallo (antes ni se miraba el error) y no se declara refrescada", async () => {
+      vi.spyOn(log, "warn").mockImplementation(() => {});
+      fetchBcvHtmlMock.mockResolvedValue(HTML_BCV_SIMULADO);
+      const base = fixtureSiempreToca();
+      const clientConUpsertRoto = {
+        from: (table: string) => ({
+          ...base.client.from(table),
+          upsert: () => Promise.resolve({ data: null, error: { code: "42501", message: "permiso denegado" } }),
+        }),
+      };
+
+      const result = await llamar(clientConUpsertRoto);
+
+      expect(registrarMock).toHaveBeenCalledTimes(1);
+      expect(registrarMock).toHaveBeenCalledWith(
+        false,
+        "No se pudo guardar la tasa leída: 42501: permiso denegado"
+      );
+      expect(result).toMatchObject({ rate: 100, isStale: true, refreshed: false });
+    });
+
+    it("cuando no tocaba leer NO registra nada", async () => {
+      vi.setSystemTime(new Date("2026-09-24T15:59:00Z"));
+      const { client } = createFakeSupabase({
+        cached: { rate_date: "2026-09-24", usd_to_ves: 800 },
+        lastFetchedAt: "2026-09-24T11:08:00Z",
+      });
+
+      await llamar(client);
+
+      expect(fetchBcvHtmlMock).not.toHaveBeenCalled();
+      expect(registrarMock).not.toHaveBeenCalled();
+    });
+
+    it("cuando la ventana de fallo frena el intento NO registra nada", async () => {
+      vi.spyOn(log, "warn").mockImplementation(() => {});
+      const { client } = fixtureSiempreToca();
+      fetchBcvHtmlMock.mockRejectedValueOnce(new Error("boom"));
+      await llamar(client);
+      expect(registrarMock).toHaveBeenCalledTimes(1);
+
+      vi.setSystemTime(new Date("2026-11-21T15:02:00Z")); // dentro de los 5 min
+      await llamar(client);
+
+      expect(fetchBcvHtmlMock).toHaveBeenCalledTimes(1);
+      expect(registrarMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe("el log deja de gritar cada minuto", () => {
+    async function fallarConRegistro(registro: ReturnType<typeof registroFallo>, motivoDelError = "boom") {
+      fetchBcvHtmlMock.mockRejectedValue(new Error(motivoDelError));
+      registrarMock.mockResolvedValue(registro);
+      resetBcvFailureBackoffForTests();
+      await llamar(fixtureSiempreToca().client, { ignoreFailureBackoff: true });
+    }
+
+    it("el primer fallo seguido avisa con log.warn y la antigüedad de la tasa", async () => {
+      const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
+
+      await fallarConRegistro(registroFallo(1, null));
+
+      expect(warn).toHaveBeenCalledWith("bcv_lectura_fallida", {
+        fallosSeguidos: 1,
+        motivo: "boom",
+        tasaDe: "2026-11-18",
+        diasDeAntiguedad: 3,
+      });
+    });
+
+    it("el segundo fallo con el MISMO motivo no avisa", async () => {
+      const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
+
+      await fallarConRegistro(registroFallo(2, "boom"));
+
+      expect(warn).not.toHaveBeenCalledWith("bcv_lectura_fallida", expect.anything());
+    });
+
+    it("el segundo fallo con motivo DISTINTO sí avisa", async () => {
+      const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
+
+      await fallarConRegistro(registroFallo(2, "otro motivo"));
+
+      expect(warn).toHaveBeenCalledWith("bcv_lectura_fallida", expect.objectContaining({ fallosSeguidos: 2 }));
+    });
+
+    it("cada 60 fallos seguidos repite el aviso (y el 59 o el 61 no)", async () => {
+      const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
+
+      await fallarConRegistro(registroFallo(59));
+      await fallarConRegistro(registroFallo(61));
+      expect(warn).not.toHaveBeenCalledWith("bcv_lectura_fallida", expect.anything());
+
+      await fallarConRegistro(registroFallo(60));
+      expect(warn).toHaveBeenCalledWith("bcv_lectura_fallida", expect.objectContaining({ fallosSeguidos: 60 }));
+    });
+
+    it("log.error('bcv_sin_actualizar') sale exactamente en el fallo 240, no en el 239 ni en el 241", async () => {
+      expect(BCV_FALLOS_PARA_ALERTA).toBe(240);
+      const error = vi.spyOn(log, "error").mockImplementation(() => {});
+      vi.spyOn(log, "warn").mockImplementation(() => {});
+      leerEstadoMock.mockResolvedValue({
+        lastAttemptAt: null,
+        lastSuccessAt: "2026-11-18T22:00:00Z",
+        lastFailureAt: null,
+        lastError: "boom",
+        consecutiveFailures: 239,
+      });
+
+      await fallarConRegistro(registroFallo(239));
+      await fallarConRegistro(registroFallo(241));
+      expect(error).not.toHaveBeenCalledWith("bcv_sin_actualizar", expect.anything());
+
+      await fallarConRegistro(registroFallo(240));
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(error).toHaveBeenCalledWith("bcv_sin_actualizar", {
+        fallosSeguidos: 240,
+        ultimoExito: "2026-11-18T22:00:00Z",
+        motivo: "boom",
+        tasaDe: "2026-11-18",
+      });
+    });
+
+    it("sin tabla (el registro devuelve null) el contador en memoria da UN solo log.error en 240 fallos", async () => {
+      const error = vi.spyOn(log, "error").mockImplementation(() => {});
+      const warn = vi.spyOn(log, "warn").mockImplementation(() => {});
+      registrarMock.mockResolvedValue(null);
+      fetchBcvHtmlMock.mockRejectedValue(new Error("boom"));
+      const { client } = fixtureSiempreToca();
+
+      for (let i = 0; i < BCV_FALLOS_PARA_ALERTA; i++) {
+        await llamar(client, { ignoreFailureBackoff: true });
+      }
+
+      expect(error).toHaveBeenCalledTimes(1);
+      expect(error).toHaveBeenCalledWith(
+        "bcv_sin_actualizar",
+        expect.objectContaining({ fallosSeguidos: 240, ultimoExito: null })
+      );
+      // 1 (primero) + 4 múltiplos de 60 (60, 120, 180, 240); el resto, silencio.
+      expect(warn).toHaveBeenCalledTimes(5);
+    });
+
+    it("sin tabla, un éxito vuelve el contador en memoria a 0", async () => {
+      const error = vi.spyOn(log, "error").mockImplementation(() => {});
+      vi.spyOn(log, "warn").mockImplementation(() => {});
+      vi.spyOn(log, "info").mockImplementation(() => {});
+      registrarMock.mockResolvedValue(null);
+      const { client } = fixtureSiempreToca();
+
+      fetchBcvHtmlMock.mockRejectedValue(new Error("boom"));
+      for (let i = 0; i < 100; i++) await llamar(client, { ignoreFailureBackoff: true });
+      fetchBcvHtmlMock.mockResolvedValueOnce(HTML_BCV_SIMULADO);
+      await llamar(client, { ignoreFailureBackoff: true }); // éxito
+      for (let i = 0; i < 139; i++) await llamar(client, { ignoreFailureBackoff: true });
+
+      // 100 + 139 sin el éxito en medio habrían cruzado 240; con el reinicio no.
+      expect(error).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("alerta", () => {
+    const hace9h = "2026-11-21T06:00:00Z"; // el reloj de este describe es 15:00Z
+    const estadoViejo = {
+      lastAttemptAt: null,
+      lastSuccessAt: hace9h,
+      lastFailureAt: null,
+      lastError: "error del estado",
+      consecutiveFailures: 400,
+    };
+
+    it("tras un refresco exitoso la alerta es null aunque el estado leído al principio fuera viejo", async () => {
+      leerEstadoMock.mockResolvedValue(estadoViejo);
+      fetchBcvHtmlMock.mockResolvedValue(HTML_BCV_SIMULADO);
+      const { client } = fixtureSiempreToca();
+
+      const result = await llamar(client);
+
+      expect(result.refreshed).toBe(true);
+      expect(result.alerta).toBeNull();
+    });
+
+    it("sin refrescar y con el último éxito de hace 9 h, la alerta trae esa fecha y el último error", async () => {
+      leerEstadoMock.mockResolvedValue(estadoViejo);
+      // No toca leer: la última lectura (fetched_at) es de hace 1 min.
+      const { client } = createFakeSupabase({
+        cached: { rate_date: "2026-11-18", usd_to_ves: 100 },
+        lastFetchedAt: "2026-11-21T14:59:00Z",
+      });
+
+      const result = await llamar(client);
+
+      expect(fetchBcvHtmlMock).not.toHaveBeenCalled();
+      expect(result.alerta).toEqual({ desde: hace9h, ultimoError: "error del estado" });
+    });
+
+    it("si esta llamada intentó y falló, el último error de la alerta es el de ESTE intento", async () => {
+      vi.spyOn(log, "warn").mockImplementation(() => {});
+      leerEstadoMock.mockResolvedValue(estadoViejo);
+      registrarMock.mockResolvedValue(registroFallo(401));
+      fetchBcvHtmlMock.mockRejectedValue(new Error("certificado vencido"));
+      const { client } = fixtureSiempreToca();
+
+      const result = await llamar(client);
+
+      expect(result.isStale).toBe(true);
+      expect(result.alerta).toEqual({ desde: hace9h, ultimoError: "certificado vencido" });
+    });
+
+    it("con la ventana de fallo activa también devuelve la alerta del estado", async () => {
+      vi.spyOn(log, "warn").mockImplementation(() => {});
+      leerEstadoMock.mockResolvedValue(estadoViejo);
+      const { client } = fixtureSiempreToca();
+      fetchBcvHtmlMock.mockRejectedValueOnce(new Error("boom"));
+      await llamar(client);
+
+      const result = await llamar(client); // dentro de los 5 min: no sale a la red
+
+      expect(fetchBcvHtmlMock).toHaveBeenCalledTimes(1);
+      expect(result.alerta).toEqual({ desde: hace9h, ultimoError: "error del estado" });
+    });
+
+    it("tabla inexistente (estado null y registro null): la tasa se devuelve igual que antes y sin alerta", async () => {
+      vi.spyOn(log, "warn").mockImplementation(() => {});
+      leerEstadoMock.mockResolvedValue(null);
+      registrarMock.mockResolvedValue(null);
+      const { client } = fixtureSiempreToca();
+
+      fetchBcvHtmlMock.mockRejectedValueOnce(new Error("boom"));
+      const fallida = await llamar(client);
+      expect(fallida).toEqual({ rate: 100, rateDate: "2026-11-18", isStale: true, refreshed: false, alerta: null });
+
+      fetchBcvHtmlMock.mockResolvedValueOnce(HTML_BCV_SIMULADO);
+      const buena = await llamar(client, { ignoreFailureBackoff: true });
+      expect(buena).toEqual({ rate: 775.3356, rateDate: "2026-08-22", isStale: false, refreshed: true, alerta: null });
     });
   });
 });

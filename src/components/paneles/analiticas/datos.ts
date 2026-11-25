@@ -1,6 +1,6 @@
 import type { BusinessHours, DayKey } from "@/lib/business-hours";
-import type { Vista } from "@/lib/paneles/canal";
-import { metaDelDia, racha } from "@/lib/paneles/rendimiento";
+import { tiendaVisible, type Vista } from "@/lib/paneles/canal";
+import { diaAbierto, metaDelDia, racha } from "@/lib/paneles/rendimiento";
 import {
   sumaCanales,
   type CanalId,
@@ -10,7 +10,7 @@ import {
   type PanelVentas,
   type PanelVentasActivas,
 } from "@/lib/paneles/parse";
-import { crmDayKey, todayKey } from "@/lib/sales-day";
+import { crmDayKey, shiftDayKey, todayKey } from "@/lib/sales-day";
 import { CRM_TIME_ZONE } from "@/lib/time-zone";
 import type { SerieGrafico } from "@/components/paneles/panel-graficos";
 
@@ -106,7 +106,9 @@ function valorDeTramo(fila: PanelVentas["serie"][number], canal: CanalId, medida
  * Las series que dibuja el gráfico. En resumen cada canal es una línea, salvo
  * al comparar: la serie previa es la del TOTAL, y una línea por canal contra un
  * total previo no se puede leer, así que al comparar el resumen pasa a una
- * sola línea «Total» (la leyenda lo dice).
+ * sola línea «Total» (la leyenda lo dice). Con la tienda oculta (D1,
+ * 21/11/2026) el resumen es SIEMPRE una sola serie «Total» —la suma de los dos
+ * canales— en el color online, sin desglose.
  */
 export function serieDeMedida(
   dato: PanelVentas,
@@ -120,9 +122,9 @@ export function serieDeMedida(
       valores: dato.serie.map((fila) => [valorDeTramo(fila, vista, medida)]),
     };
   }
-  if (comoTotal) {
+  if (comoTotal || !tiendaVisible()) {
     return {
-      series: [{ id: "total", nombre: "Total", color: "var(--lm-ink)" }],
+      series: [{ id: "total", nombre: "Total", color: tiendaVisible() ? "var(--lm-ink)" : COLOR_CANAL.online }],
       valores: dato.serie.map((fila) => [valorDeTramo(fila, "online", medida) + valorDeTramo(fila, "tienda", medida)]),
     };
   }
@@ -257,10 +259,15 @@ export function estaAbierto(horario: BusinessHours, diaSemana: number, hora: num
 export interface FiltroActivas {
   tipo: "todos" | "presupuesto" | "carrito";
   canal: Vista;
-  antiguedad: "todas" | "24h" | "3d" | "7d";
+  /** Rol de quien armó la venta (no el canal). Un ítem sin dato de equipo no pasa un filtro distinto de «todos». */
+  equipo: "todos" | "online" | "tienda";
+  /** Estado de la ventana de WhatsApp; excluyentes (Abierta = solo abierta). */
+  ventana: "todas" | "abierta" | "por_cerrar" | "cerrada";
+  /** Más viejo que N horas (movido hace más de N horas). */
+  antiguedad: "todas" | "12h" | "24h";
 }
 
-const HORAS_MINIMAS: Record<FiltroActivas["antiguedad"], number> = { todas: 0, "24h": 24, "3d": 72, "7d": 168 };
+const HORAS_MINIMAS: Record<FiltroActivas["antiguedad"], number> = { todas: 0, "12h": 12, "24h": 24 };
 
 export function filtrarActivas(
   items: PanelVentasActivas["items"],
@@ -271,6 +278,8 @@ export function filtrarActivas(
     (item) =>
       (filtro.tipo === "todos" || item.tipo === filtro.tipo) &&
       (filtro.canal === "resumen" || item.canal === filtro.canal) &&
+      (filtro.equipo === "todos" || item.equipo === filtro.equipo) &&
+      (filtro.ventana === "todas" || item.ventana === filtro.ventana) &&
       (filtro.antiguedad === "todas" || horasDesde(item.desde, ahora) > HORAS_MINIMAS[filtro.antiguedad])
   );
 }
@@ -325,17 +334,42 @@ export function mesesDelAnio(serie: PanelVentas["serie"], ahora: Date): MesDelAn
 export interface DiaDeRendimiento {
   /** `YYYY-MM-DD`. */
   dia: string;
-  logrado: number;
-  meta: number;
-  /** `null` mientras el día no termina (hoy). */
+  /**
+   * `"evaluado"`: un día hábil con meta, contado contra ella. `"sin_datos"`
+   * (21/11/2026): un día hábil ANTERIOR al piso de los paneles; no hay con qué
+   * evaluarlo, así que no lleva meta ni monto y no cuenta para nada.
+   */
+  estado: "evaluado" | "sin_datos";
+  /** `null` solo en un día sin datos: nunca un 0 que parezca verdad. */
+  logrado: number | null;
+  /** `null` solo en un día sin datos. */
+  meta: number | null;
+  /** `null` mientras el día no termina (hoy) y en un día sin datos. */
   cumplida: boolean | null;
   enCurso: boolean;
 }
+
+/** Un día del calendario que sí se evaluó contra su meta. */
+export type DiaEvaluado = DiaDeRendimiento & { estado: "evaluado"; logrado: number; meta: number };
+
+export function esDiaEvaluado(d: DiaDeRendimiento): d is DiaEvaluado {
+  return d.estado === "evaluado";
+}
+
+/** Cuántos días calendario cubre la ventana del calendario (los últimos 40, hoy incluido). */
+const DIAS_DE_LA_VENTANA = 40;
 
 /**
  * Los últimos `max` días hábiles con meta vigente. Un día cerrado, o anterior a
  * toda meta, no entra (igual que en `racha`: no corta nada ni suma). `hoy` queda
  * "en curso" y no cuenta como cumplido ni como fallado.
+ *
+ * Con `piso` (21/11/2026: los paneles cuentan desde el 16/11), un día hábil
+ * ANTERIOR al día del piso —hasta donde llega la ventana de 40 días— sale como
+ * `"sin_datos"`: la serie ya viene recortada al piso, así que sin esto el
+ * calendario callaría por qué faltan días en vez de decirlo. Esos días no tienen
+ * meta ni monto y los ignoran la racha, «Cumplidas», «evaluadas» y «Mejor día».
+ * Sin piso el resultado es el de siempre.
  */
 export function diasDeRendimiento({
   serie,
@@ -344,6 +378,7 @@ export function diasDeRendimiento({
   horario,
   hoy,
   max = 30,
+  piso = null,
 }: {
   serie: PanelVentas["serie"];
   metas: MetaVenta[];
@@ -351,6 +386,7 @@ export function diasDeRendimiento({
   horario: BusinessHours;
   hoy: string;
   max?: number;
+  piso?: Date | null;
 }): DiaDeRendimiento[] {
   const logradoPorDia = new Map<string, number>();
   for (const fila of serie) {
@@ -359,13 +395,25 @@ export function diasDeRendimiento({
     logradoPorDia.set(dia, (logradoPorDia.get(dia) ?? 0) + monto);
   }
 
+  const desdePiso = piso === null ? null : todayKey(piso);
+
   const dias: DiaDeRendimiento[] = [];
   for (const dia of [...logradoPorDia.keys()].sort()) {
+    if (desdePiso !== null && dia < desdePiso) continue; // lo anterior al piso se enumera aparte, como «sin datos»
     const meta = metaDelDia(metas, vista, dia, horario);
     if (meta === null || dia > hoy) continue;
     const logrado = logradoPorDia.get(dia) ?? 0;
     const enCurso = dia === hoy;
-    dias.push({ dia, logrado, meta, enCurso, cumplida: enCurso ? null : logrado >= meta });
+    dias.push({ dia, estado: "evaluado", logrado, meta, enCurso, cumplida: enCurso ? null : logrado >= meta });
+  }
+
+  if (desdePiso !== null) {
+    const primero = shiftDayKey(hoy, -(DIAS_DE_LA_VENTANA - 1));
+    for (let dia = primero; dia < desdePiso && dia <= hoy; dia = shiftDayKey(dia, 1)) {
+      if (!diaAbierto(dia, horario)) continue;
+      dias.push({ dia, estado: "sin_datos", logrado: null, meta: null, enCurso: false, cumplida: null });
+    }
+    dias.sort((a, b) => a.dia.localeCompare(b.dia));
   }
   return dias.slice(-max);
 }
@@ -376,8 +424,10 @@ export function resumenDeRendimiento(dias: DiaDeRendimiento[]): {
   cumplidas: number;
   evaluadas: number;
 } {
-  const terminados = dias.filter((d) => !d.enCurso);
-  const mejor = dias.reduce<{ dia: string; logrado: number } | null>(
+  // Un día sin datos no cuenta para nada: ni racha, ni cumplidas, ni evaluadas, ni mejor día.
+  const evaluados = dias.filter(esDiaEvaluado);
+  const terminados = evaluados.filter((d) => !d.enCurso);
+  const mejor = evaluados.reduce<{ dia: string; logrado: number } | null>(
     (m, d) => (m === null || d.logrado > m.logrado ? { dia: d.dia, logrado: d.logrado } : m),
     null
   );

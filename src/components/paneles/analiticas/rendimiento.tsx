@@ -6,10 +6,18 @@ import type { BusinessHours } from "@/lib/business-hours";
 import type { Bloque } from "@/lib/paneles-data";
 import type { Vista } from "@/lib/paneles/canal";
 import type { MetaVenta, PanelVentas } from "@/lib/paneles/parse";
+import { etiquetaDiaMes } from "@/lib/paneles/periodos";
 import { porcentaje } from "@/lib/paneles/rendimiento";
 import { todayKey } from "@/lib/sales-day";
 import { PanelBloque } from "@/components/paneles/panel-marco";
-import { diasDeRendimiento, etiquetaDeDia, resumenDeRendimiento, type DiaDeRendimiento } from "./datos";
+import {
+  diasDeRendimiento,
+  esDiaEvaluado,
+  etiquetaDeDia,
+  resumenDeRendimiento,
+  type DiaDeRendimiento,
+  type DiaEvaluado,
+} from "./datos";
 import { formatoEntero, formatoUsd, usdGrafico } from "./formato";
 
 /**
@@ -22,8 +30,18 @@ import { formatoEntero, formatoUsd, usdGrafico } from "./formato";
 
 const DIAS_A_MOSTRAR = 30;
 
-function Dia({ d }: { d: DiaDeRendimiento }) {
+function Dia({ d, piso }: { d: DiaDeRendimiento; piso: Date | null }) {
   const corto = etiquetaDeDia(d.dia).split(" ").slice(0, 2).join(" ");
+  if (!esDiaEvaluado(d)) {
+    // Un día anterior al piso: sin meta, sin monto y sin ícono de cumplido ni de fallado.
+    const sinDatos = `${etiquetaDeDia(d.dia)}: sin datos${piso ? ` (los paneles cuentan desde el ${etiquetaDiaMes(piso)})` : ""}`;
+    return (
+      <li className="an-dia an-dia--sin-datos" aria-label={sinDatos} title={sinDatos}>
+        <span>{corto}</span>
+        <small>sin datos</small>
+      </li>
+    );
+  }
   const estado = d.enCurso ? "Día en curso" : d.cumplida ? "Meta cumplida" : "No se cumplió la meta";
   const pct = porcentaje(d.logrado, d.meta);
   const detalle = `${etiquetaDeDia(d.dia)}: ${formatoUsd(d.logrado)} de ${formatoUsd(d.meta)}${pct === null ? "" : ` (${Math.round(pct)} %)`}. ${estado}`;
@@ -46,14 +64,16 @@ function Contenido({
   vista,
   horario,
   ahora,
+  piso,
 }: {
   serie: PanelVentas["serie"];
   metas: MetaVenta[];
   vista: Vista;
   horario: BusinessHours;
   ahora: Date;
+  piso: Date | null;
 }) {
-  const dias = diasDeRendimiento({ serie, metas, vista, horario, hoy: todayKey(ahora), max: DIAS_A_MOSTRAR });
+  const dias = diasDeRendimiento({ serie, metas, vista, horario, hoy: todayKey(ahora), max: DIAS_A_MOSTRAR, piso });
 
   if (dias.length === 0) {
     return (
@@ -70,14 +90,16 @@ function Contenido({
   }
 
   const resumen = resumenDeRendimiento(dias);
-  const ultima = dias[dias.length - 1];
+  // La meta vigente es la del último día evaluado: un día sin datos no tiene meta.
+  const ultima: DiaEvaluado | undefined = dias.filter(esDiaEvaluado).at(-1);
+  const hayDiasSinDatos = dias.some((d) => !esDiaEvaluado(d));
 
   return (
     <div className="an-rend">
       <div>
         <ol className="an-cal" aria-label={`Cumplimiento de la meta, últimos ${dias.length} días hábiles`}>
           {dias.map((d) => (
-            <Dia key={d.dia} d={d} />
+            <Dia key={d.dia} d={d} piso={piso} />
           ))}
         </ol>
         <div className="an-leyenda">
@@ -89,6 +111,12 @@ function Contenido({
             <X size={14} aria-hidden="true" />
             No se cumplió
           </span>
+          {hayDiasSinDatos && (
+            <span>
+              <i className="an-leyenda__sin-datos" aria-hidden="true" />
+              Sin datos
+            </span>
+          )}
         </div>
       </div>
       <div className="an-lado">
@@ -97,8 +125,8 @@ function Contenido({
             <Target size={14} aria-hidden="true" />
             Meta diaria
           </span>
-          <b>{formatoUsd(ultima.meta)}</b>
-          <small>vigente el {etiquetaDeDia(ultima.dia)}</small>
+          <b>{ultima ? formatoUsd(ultima.meta) : "—"}</b>
+          <small>{ultima ? `vigente el ${etiquetaDeDia(ultima.dia)}` : "Sin días evaluados todavía"}</small>
         </div>
         <div className="an-stat" role="group" aria-label="Racha">
           <span>
@@ -137,12 +165,15 @@ export function RendimientoDeMetas({
   vista,
   horario,
   ahora,
+  piso = null,
 }: {
   ventasUltimos40: Bloque<PanelVentas>;
   metas: Bloque<MetaVenta[]>;
   vista: Vista;
   horario: BusinessHours;
   ahora: Date;
+  /** El piso de datos de los paneles (`rangos.piso`): los días anteriores salen «sin datos». */
+  piso?: Date | null;
 }) {
   return (
     <div className="pn-c12">
@@ -159,7 +190,7 @@ export function RendimientoDeMetas({
                     </h2>
                   </div>
                 </div>
-                <Contenido serie={dato.serie} metas={listaDeMetas} vista={vista} horario={horario} ahora={ahora} />
+                <Contenido serie={dato.serie} metas={listaDeMetas} vista={vista} horario={horario} ahora={ahora} piso={piso} />
               </section>
             )}
           </PanelBloque>

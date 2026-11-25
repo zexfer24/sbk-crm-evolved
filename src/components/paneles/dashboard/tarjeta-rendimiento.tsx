@@ -9,10 +9,20 @@ import { guardarMetaVenta } from "@/lib/mutations";
 import { createClient } from "@/lib/supabase/client";
 import type { BusinessHours } from "@/lib/business-hours";
 import type { Bloque } from "@/lib/paneles-data";
-import { VISTAS, type Vista } from "@/lib/paneles/canal";
+import { VISTAS, canalesVisibles, type Vista } from "@/lib/paneles/canal";
 import type { CanalId, MetaVenta, PanelVentas } from "@/lib/paneles/parse";
-import { curvaHoraria, faltante, metaDelDia, porcentaje, proyeccion, racha } from "@/lib/paneles/rendimiento";
-import { crmDayKey } from "@/lib/sales-day";
+import { etiquetaDiaMes } from "@/lib/paneles/periodos";
+import {
+  MIN_DIAS_CURVA,
+  curvaHoraria,
+  diasConVentasParaCurva,
+  faltante,
+  metaDelDia,
+  porcentaje,
+  proyeccion,
+  racha,
+} from "@/lib/paneles/rendimiento";
+import { crmDayKey, todayKey } from "@/lib/sales-day";
 import { crmMinuteOfDay } from "@/lib/time-zone";
 import { Anillo } from "@/components/paneles/panel-graficos";
 import { formatoUsd } from "@/components/paneles/panel-marco";
@@ -73,6 +83,7 @@ export function TarjetaRendimiento({
   vista,
   ahora,
   hoyClave,
+  piso = null,
 }: {
   hoy: PanelVentas;
   historia: Bloque<PanelVentas>;
@@ -81,6 +92,8 @@ export function TarjetaRendimiento({
   vista: Vista;
   ahora: Date;
   hoyClave: string;
+  /** El piso de datos de los paneles (`rangos.piso`): ni la curva ni la racha miran días anteriores. */
+  piso?: Date | null;
 }) {
   const router = useRouter();
   const idCampo = useId();
@@ -101,20 +114,27 @@ export function TarjetaRendimiento({
   const cumplida = meta !== null && logrado !== null && logrado >= meta;
 
   const horaActual = crmMinuteOfDay(ahora) / 60;
-  const curva = historia.ok
-    ? curvaHoraria(historia.dato.perfil_horario.map((d) => ({ dia: d.dia, porHora: porHoraDe(d, vista) })))
-    : null;
+  const perfilDeLaVista = historia.ok
+    ? historia.dato.perfil_horario.map((d) => ({ dia: d.dia, porHora: porHoraDe(d, vista) }))
+    : [];
+  const curva = historia.ok ? curvaHoraria(perfilDeLaVista, piso) : null;
+  // «van N»: los días con ventas que ya cuentan para la curva (los mismos que ella acepta).
+  const diasDeCurva = diasConVentasParaCurva(perfilDeLaVista, piso);
   const proyectado = logrado !== null ? proyeccion(logrado, horaActual, curva) : null;
 
-  // Cada día de la historia con lo logrado y su meta (null si ese día no tenía).
+  // Cada día de la historia con lo logrado y su meta (null si ese día no tenía). Un día anterior al
+  // piso no entra: la historia ya llega recortada, pero la racha no puede depender de que lo esté.
+  const desdePiso = piso === null ? null : todayKey(piso);
   const diasHistoria =
     historia.ok && lista
       ? (() => {
           const logrados = serieDeVista(historia.dato, vista, "ingresos");
-          return historia.dato.serie.map((p, i) => {
-            const dia = crmDayKey(p.t);
-            return { dia, logrado: logrados[i], meta: metaDelDia(lista, vista, dia, horario) };
-          });
+          return historia.dato.serie
+            .map((p, i) => {
+              const dia = crmDayKey(p.t);
+              return { dia, logrado: logrados[i], meta: metaDelDia(lista, vista, dia, horario) };
+            })
+            .filter((d) => desdePiso === null || d.dia >= desdePiso);
         })()
       : null;
   const seguidos = diasHistoria ? racha(diasHistoria) : null;
@@ -125,7 +145,8 @@ export function TarjetaRendimiento({
     .slice(-7);
 
   const etiquetaVista = VISTAS.find((v) => v.id === vista)?.etiqueta ?? "";
-  const canalesEditables: CanalId[] = vista === "resumen" ? ["online", "tienda"] : [vista];
+  // D1 (21/11/2026): con la tienda oculta el resumen edita solo la meta online («Meta del día»).
+  const canalesEditables: CanalId[] = vista === "resumen" ? canalesVisibles() : [vista];
 
   function metaActual(canal: CanalId): number | null {
     return lista ? metaDelDia(lista, canal, hoyClave, HORARIO_SIEMPRE_ABIERTO) : null;
@@ -323,7 +344,7 @@ export function TarjetaRendimiento({
             {!historia.ok ? (
               "La proyección no está disponible ahora."
             ) : curva === null ? (
-              "La proyección aparece con 10 días hábiles de historia."
+              `La proyección aparece con ${MIN_DIAS_CURVA} días con ventas${piso ? ` desde el ${etiquetaDiaMes(piso)}` : ""} (van ${diasDeCurva})`
             ) : proyectado === null ? (
               "Todavía es temprano para proyectar el cierre del día."
             ) : (

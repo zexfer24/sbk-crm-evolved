@@ -75,6 +75,11 @@ function vectorDeNumeros(valor: unknown, ruta: string, columnas: number): number
   return filas.map((celda, i) => numero(celda, `${ruta}[${i}]`));
 }
 
+/** Un valor de la lista, o `null` si falta (base vieja); uno que no está en la lista sí lanza. */
+function nuloOUno<T extends string>(valor: unknown, permitidos: readonly T[], ruta: string): T | null {
+  return valor === null || valor === undefined ? null : uno(valor, permitidos, ruta);
+}
+
 const CANALES = ["online", "tienda"] as const;
 
 // ---------------------------------------------------------------------------
@@ -505,12 +510,45 @@ export interface MontoActivo {
   sin_precio: number;
 }
 
+/**
+ * De dónde sale una venta activa (22/11/2026, plan "Ventas activas"). Es el
+ * flujo, no la persona: el canal se deduce de aquí (`presupuesto_inventario` →
+ * tienda; los otros dos → online) y el equipo (rol de quien la armó) va aparte.
+ */
+export type OrigenActiva = "carrito_chat" | "presupuesto_chat" | "presupuesto_inventario";
+/** Rol de quien armó la venta: `caja` → tienda; `sin_dato` si no se sabe. */
+export type EquipoActiva = "online" | "tienda" | "sin_dato";
+/** Estado de la ventana de 24 h de WhatsApp de la conversación de la venta. */
+export type VentanaActiva = "abierta" | "por_cerrar" | "cerrada" | "no_aplica";
+
+export const ORIGENES_ACTIVA: readonly OrigenActiva[] = ["carrito_chat", "presupuesto_chat", "presupuesto_inventario"];
+export const EQUIPOS_ACTIVA: readonly EquipoActiva[] = ["online", "tienda", "sin_dato"];
+export const VENTANAS_ACTIVA: readonly VentanaActiva[] = ["abierta", "por_cerrar", "cerrada", "no_aplica"];
+
+export interface MontoCantidad {
+  monto: number | null;
+  cantidad: number;
+}
+
+/** Las claves que `panel_ventas_activas()` agregó el 22/11/2026; `null` si la base todavía no las trae. */
+export interface DesgloseVentasActivas {
+  tramos_48h: { tramo: "12h" | "24h" | "48h"; monto: number | null; cantidad: number }[];
+  fuera_de_ventana: { carritos: number; presupuestos: number; por_origen: Record<OrigenActiva, number> };
+  por_origen: Record<OrigenActiva, MontoActivo>;
+  por_equipo: Record<EquipoActiva, MontoCantidad>;
+  por_origen_equipo: Record<OrigenActiva, Record<EquipoActiva, MontoCantidad>>;
+  por_ventana: Record<VentanaActiva, MontoCantidad>;
+  por_canal_ventana: Record<CanalId, Record<VentanaActiva, MontoCantidad>>;
+}
+
 export interface PanelVentasActivas {
   total: number | null;
   presupuestos: MontoActivo;
   carritos: MontoActivo;
   por_canal: Record<CanalId, { monto: number | null; cantidad: number }>;
   antiguedad: { tramo: "24h" | "3d" | "7d" | "30d"; monto: number | null; cantidad: number }[];
+  /** `null` con una base que todavía no trae las claves nuevas (migración sin aplicar). */
+  desglose: DesgloseVentasActivas | null;
   items: {
     tipo: "presupuesto" | "carrito";
     id: string;
@@ -520,6 +558,11 @@ export interface PanelVentasActivas {
     monto: number | null;
     unidades: number;
     desde: string;
+    origen: OrigenActiva | null;
+    equipo: EquipoActiva | null;
+    ventana: VentanaActiva | null;
+    ventana_hasta: string | null;
+    conversation_id: string | null;
   }[];
 }
 
@@ -542,6 +585,48 @@ export function parsePanelVentasActivas(json: unknown): PanelVentasActivas {
     return { monto: numeroONull(c.monto, `${ruta}.monto`), cantidad: numero(c.cantidad, `${ruta}.cantidad`) };
   };
 
+  const parseCelda = (v: unknown, ruta: string): MontoCantidad => {
+    const m = objeto(v, ruta);
+    return { monto: numeroONull(m.monto, `${ruta}.monto`), cantidad: numero(m.cantidad, `${ruta}.cantidad`) };
+  };
+  /** Un objeto con una celda por cada clave permitida. */
+  const porClaves = <K extends string, T>(v: unknown, claves: readonly K[], ruta: string, leer: (c: unknown, r: string) => T): Record<K, T> => {
+    const m = objeto(v, ruta);
+    const salida = {} as Record<K, T>;
+    for (const k of claves) salida[k] = leer(m[k], `${ruta}.${k}`);
+    return salida;
+  };
+  const parseDesglose = (): DesgloseVentasActivas | null => {
+    // Base vieja: sin `por_origen` no se mira ninguna otra clave nueva.
+    if (o.por_origen === undefined) return null;
+    const fuera = objeto(o.fuera_de_ventana, `${base}.fuera_de_ventana`);
+    return {
+      tramos_48h: lista(o.tramos_48h, `${base}.tramos_48h`).map((fila, i) => {
+        const ruta = `${base}.tramos_48h[${i}]`;
+        const f = objeto(fila, ruta);
+        return {
+          tramo: uno(f.tramo, ["12h", "24h", "48h"], `${ruta}.tramo`),
+          monto: numeroONull(f.monto, `${ruta}.monto`),
+          cantidad: numero(f.cantidad, `${ruta}.cantidad`),
+        };
+      }),
+      fuera_de_ventana: {
+        carritos: numero(fuera.carritos, `${base}.fuera_de_ventana.carritos`),
+        presupuestos: numero(fuera.presupuestos, `${base}.fuera_de_ventana.presupuestos`),
+        por_origen: porClaves(fuera.por_origen, ORIGENES_ACTIVA, `${base}.fuera_de_ventana.por_origen`, numero),
+      },
+      por_origen: porClaves(o.por_origen, ORIGENES_ACTIVA, `${base}.por_origen`, parseMontoActivo),
+      por_equipo: porClaves(o.por_equipo, EQUIPOS_ACTIVA, `${base}.por_equipo`, parseCelda),
+      por_origen_equipo: porClaves(o.por_origen_equipo, ORIGENES_ACTIVA, `${base}.por_origen_equipo`, (c, r) =>
+        porClaves(c, EQUIPOS_ACTIVA, r, parseCelda)
+      ),
+      por_ventana: porClaves(o.por_ventana, VENTANAS_ACTIVA, `${base}.por_ventana`, parseCelda),
+      por_canal_ventana: porClaves(o.por_canal_ventana, CANALES, `${base}.por_canal_ventana`, (c, r) =>
+        porClaves(c, VENTANAS_ACTIVA, r, parseCelda)
+      ),
+    };
+  };
+
   return {
     total: numeroONull(o.total, `${base}.total`),
     presupuestos: parseMontoActivo(o.presupuestos, `${base}.presupuestos`),
@@ -556,6 +641,7 @@ export function parsePanelVentasActivas(json: unknown): PanelVentasActivas {
         cantidad: numero(f.cantidad, `${ruta}.cantidad`),
       };
     }),
+    desglose: parseDesglose(),
     items: lista(o.items, `${base}.items`).map((fila, i) => {
       const ruta = `${base}.items[${i}]`;
       const f = objeto(fila, ruta);
@@ -568,6 +654,11 @@ export function parsePanelVentasActivas(json: unknown): PanelVentasActivas {
         monto: numeroONull(f.monto, `${ruta}.monto`),
         unidades: numero(f.unidades, `${ruta}.unidades`),
         desde: texto(f.desde, `${ruta}.desde`),
+        origen: nuloOUno(f.origen, ORIGENES_ACTIVA, `${ruta}.origen`),
+        equipo: nuloOUno(f.equipo, EQUIPOS_ACTIVA, `${ruta}.equipo`),
+        ventana: nuloOUno(f.ventana, VENTANAS_ACTIVA, `${ruta}.ventana`),
+        ventana_hasta: textoONull(f.ventana_hasta, `${ruta}.ventana_hasta`),
+        conversation_id: textoONull(f.conversation_id, `${ruta}.conversation_id`),
       };
     }),
   };

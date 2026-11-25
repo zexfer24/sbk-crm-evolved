@@ -1,7 +1,7 @@
 "use client";
 
 import type { Bloque } from "@/lib/paneles-data";
-import type { Vista } from "@/lib/paneles/canal";
+import { tiendaVisible, type Vista } from "@/lib/paneles/canal";
 import type { CanalId, PanelVentas } from "@/lib/paneles/parse";
 import { PanelBloque } from "@/components/paneles/panel-marco";
 import { BarraApilada100 } from "@/components/paneles/panel-graficos";
@@ -22,7 +22,20 @@ const COLOR_ESTANDAR = "var(--an-estandar)";
 const MAX_REPUESTOS = 10;
 
 function TipoDePrecio({ dato, vista }: { dato: PanelVentas; vista: Vista }) {
+  // D1 (21/11/2026): con la tienda oculta el resumen es UNA sola barra con los dos canales sumados, sin chip de canal.
+  const sumados = vista === "resumen" && !tiendaVisible();
   const canales: CanalId[] = vista === "resumen" ? ["online", "tienda"] : [vista];
+  const barras = sumados
+    ? [
+        {
+          id: "total",
+          nombre: "Total",
+          promocion: dato.tipo_precio.online.promocion + dato.tipo_precio.tienda.promocion,
+          estandar: dato.tipo_precio.online.estandar + dato.tipo_precio.tienda.estandar,
+          canal: null as CanalId | null,
+        },
+      ]
+    : canales.map((c) => ({ id: c, nombre: nombreDeCanal(c), ...dato.tipo_precio[c], canal: c as CanalId | null }));
   return (
     <section className="pn-card pn-card--panel pn-c5" aria-labelledby="an-precio-titulo">
       <div className="pn-card__cab">
@@ -37,13 +50,12 @@ function TipoDePrecio({ dato, vista }: { dato: PanelVentas; vista: Vista }) {
         </div>
       </div>
       <div style={{ display: "grid", gap: 20 }}>
-        {canales.map((canal) => {
-          const { promocion, estandar } = dato.tipo_precio[canal];
+        {barras.map(({ id, nombre, promocion, estandar, canal }) => {
           return (
-            <div key={canal}>
-              {canales.length > 1 && (
+            <div key={id}>
+              {barras.length > 1 && canal !== null && (
                 <p style={{ margin: "0 0 8px" }}>
-                  <span className={`pn-chip pn-chip--${canal}`}>{nombreDeCanal(canal)}</span>
+                  <span className={`pn-chip pn-chip--${canal}`}>{nombre}</span>
                 </p>
               )}
               <BarraApilada100
@@ -51,7 +63,7 @@ function TipoDePrecio({ dato, vista }: { dato: PanelVentas; vista: Vista }) {
                   { id: "promocion", etiqueta: "Promoción", valor: promocion, color: COLOR_PROMOCION },
                   { id: "estandar", etiqueta: "Estándar", valor: estandar, color: COLOR_ESTANDAR },
                 ]}
-                ariaLabel={`${nombreDeCanal(canal)}: ${promocion} unidades con precio de promoción y ${estandar} con precio estándar.`}
+                ariaLabel={`${nombre}: ${promocion} unidades con precio de promoción y ${estandar} con precio estándar.`}
               />
             </div>
           );
@@ -100,7 +112,7 @@ function TopRepuestos({ dato, vista }: { dato: PanelVentas; vista: Vista }) {
                     Ingresos
                   </th>
                 )}
-                {conIngresos && (
+                {conIngresos && tiendaVisible() && (
                   <th scope="col" className="an-oculta-m">
                     Online / tienda
                   </th>
@@ -119,7 +131,7 @@ function TopRepuestos({ dato, vista }: { dato: PanelVentas; vista: Vista }) {
                   </td>
                   <td className="pn-der">{unidadesDe(r)}</td>
                   {conIngresos && <td className="pn-der">{formatoUsd(r.ingresos)}</td>}
-                  {conIngresos && (
+                  {conIngresos && tiendaVisible() && (
                     <td className="an-oculta-m">
                       {r.unidades_online} / {r.unidades_tienda}
                     </td>

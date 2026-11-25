@@ -47,6 +47,10 @@
   cursor: pointer;
   white-space: nowrap;
 }
+.an-comp:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
 .an-comp__riel {
   position: relative;
   width: 34px;
@@ -666,6 +670,25 @@
 .an-dia--curso {
   background: none;
   box-shadow: inset 0 0 0 1.5px var(--lm-line);
+}
+/* Un día anterior al piso de datos (16/11/2026): atenuado, sin ícono ni monto. Los tokens
+   cambian solos con el tema, así que se lee igual en claro y en oscuro. */
+.an-dia--sin-datos {
+  background: none;
+  box-shadow: inset 0 0 0 1px var(--lm-line);
+  opacity: 0.7;
+  justify-content: center;
+}
+.an-dia--sin-datos small {
+  color: var(--lm-ink-soft);
+  font-size: 10px;
+}
+.an-leyenda__sin-datos {
+  width: 14px;
+  height: 14px;
+  border-radius: 4px;
+  box-shadow: inset 0 0 0 1px var(--lm-line);
+  flex-shrink: 0;
 }
 .an-lado {
   display: grid;

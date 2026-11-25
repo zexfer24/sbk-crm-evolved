@@ -33,6 +33,7 @@ import { InventarioCarritoProvider } from "@/components/inventario/inventario-ca
 import { PresupuestosPanel } from "@/components/inventario/presupuestos-panel";
 import { CalculadoraMostradorConCarrito } from "@/components/inventario/calculadora-mostrador";
 import type { BcvRateSummary } from "@/components/inbox/bcv-rate-chip";
+import { formatearDesde } from "@/lib/bcv-alerta";
 import "@/components/dashboard/dashboard.css";
 import "@/components/agent-control/agent-control.css";
 import "@/components/crm.css";
@@ -50,6 +51,16 @@ import "@/components/inventario/mostrador.css";
  */
 function rateNote(bcvRate: BcvRateSummary | null): string {
   if (!bcvRate) return "Sin tasa disponible ahora mismo: los precios van solo en dólares.";
+
+  // Más de 8 h sin una lectura buena del BCV (19/11/2026: dos días sin que nadie
+  // lo notara): la fecha de la tasa ya no tranquiliza, lo que importa es desde
+  // cuándo no se actualiza.
+  if (bcvRate.alerta) {
+    const desde = bcvRate.alerta.desde
+      ? `Sin actualizar desde ${formatearDesde(bcvRate.alerta.desde)}`
+      : "Sin lecturas buenas del BCV registradas";
+    return `${desde}: los bolívares y los dólares BCV pueden no estar al día.`;
+  }
 
   // Mediodía UTC para que el día no se corra al formatear en otra zona.
   const day = new Date(`${bcvRate.rateDate}T12:00:00Z`).toLocaleDateString("es-VE", {
@@ -284,7 +295,12 @@ export function InventarioView({
                 {/* La fecha va pegada al número a propósito: con esta tasa se
                     calculan precios, y una tasa de hace tres días se ve idéntica
                     a la de hoy si solo se muestra el número. */}
-                <div className="cli-stat" data-stale={bcvRate?.isStale ? "true" : undefined}>
+                <div
+                  className="cli-stat"
+                  data-stale={bcvRate?.isStale || bcvRate?.alerta ? "true" : undefined}
+                  data-alerta={bcvRate?.alerta ? "true" : undefined}
+                  title={bcvRate?.alerta?.ultimoError ?? undefined}
+                >
                   <span className="lm-eyebrow">Tasa BCV</span>
                   <span className="lm-num cli-stat-value">{bcvRate ? bcvRate.rate.toFixed(2) : "—"}</span>
                   <span className="cli-stat-note">{rateNote(bcvRate)}</span>

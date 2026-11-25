@@ -103,6 +103,147 @@ export function historia(n: number): PanelVentas {
   return ventas({ serie: [], perfil_horario: perfil });
 }
 
+/** Los campos que un ítem trae desde el 22/11/2026; en null es lo que entrega una base sin la migración. */
+const SIN_DESGLOSE_ITEM = { origen: null, equipo: null, ventana: null, ventana_hasta: null, conversation_id: null } as const;
+
+/** Domingo 22/11/2026, 12:00 en Caracas: el «ahora» de los fixtures con desglose (sin depender del reloj real). */
+export const AHORA_ACTIVAS = new Date("2026-11-22T12:00:00-04:00");
+
+const hace = (horas: number) => new Date(AHORA_ACTIVAS.getTime() - horas * 3600_000).toISOString();
+const en = (horas: number) => new Date(AHORA_ACTIVAS.getTime() + horas * 3600_000).toISOString();
+
+type ItemActiva = PanelVentasActivas["items"][number];
+type Celda = { monto: number | null; cantidad: number };
+const vacia = (): Celda => ({ monto: null, cantidad: 0 });
+const ventanasVacias = () => ({ abierta: vacia(), por_cerrar: vacia(), cerrada: vacia(), no_aplica: vacia() });
+const equiposVacios = () => ({ online: vacia(), tienda: vacia(), sin_dato: vacia() });
+
+/**
+ * Como la RPC nueva: presupuestos y carritos de varios orígenes, equipos y
+ * ventanas, TODO coherente (los agregados cuadran con los ítems y entre sí;
+ * `calculos.test.ts` lo verifica para que nadie lo rompa). Los montos del
+ * ejemplo: total 700 en 7 ítems (online 460 en 5, tienda 240 en 2), un ítem
+ * sin precio, un presupuesto de Inventario armado por un ASESOR (equipo
+ * online, canal tienda) y otro por una caja (equipo tienda).
+ */
+export function activasConDesglose(extra: Partial<PanelVentasActivas> = {}): PanelVentasActivas {
+  const items: ItemActiva[] = [
+    // Del más viejo al más nuevo, como los entrega el servidor.
+    { tipo: "carrito", id: "c-cerrado", canal: "online", responsable: "Asesor 2", cliente: "Rosa Díaz", monto: 60, unidades: 1, desde: hace(30), origen: "carrito_chat", equipo: "sin_dato", ventana: "cerrada", ventana_hasta: hace(6), conversation_id: "conv-c-cerrado" },
+    { tipo: "presupuesto", id: "p-inv-asesor", canal: "tienda", responsable: "Asesor 1", cliente: "Luis Rojas", monto: 90, unidades: 2, desde: hace(26), origen: "presupuesto_inventario", equipo: "online", ventana: "no_aplica", ventana_hasta: null, conversation_id: null },
+    { tipo: "carrito", id: "c-por-cerrar", canal: "online", responsable: "Asesor 1", cliente: "Ana Gómez", monto: 80, unidades: 1, desde: hace(20), origen: "carrito_chat", equipo: "online", ventana: "por_cerrar", ventana_hasta: en(2.5), conversation_id: "conv-c-por-cerrar" },
+    { tipo: "presupuesto", id: "p-chat", canal: "online", responsable: "Asesor 1", cliente: "Marta Silva", monto: 200, unidades: 3, desde: hace(10), origen: "presupuesto_chat", equipo: "online", ventana: "abierta", ventana_hasta: en(10), conversation_id: "conv-p-chat" },
+    { tipo: "presupuesto", id: "p-inv-caja", canal: "tienda", responsable: "Caja 1", cliente: "Pedro Pérez", monto: 150, unidades: 4, desde: hace(5), origen: "presupuesto_inventario", equipo: "tienda", ventana: "no_aplica", ventana_hasta: null, conversation_id: null },
+    { tipo: "carrito", id: "c-abierto", canal: "online", responsable: "Asesor 1", cliente: "Julia Pino", monto: 120, unidades: 2, desde: hace(3), origen: "carrito_chat", equipo: "online", ventana: "abierta", ventana_hasta: en(10), conversation_id: "conv-c-abierto" },
+    { tipo: "carrito", id: "c-sin-precio", canal: "online", responsable: "Asesor 2", cliente: null, monto: null, unidades: 1, desde: hace(1), origen: "carrito_chat", equipo: "online", ventana: "abierta", ventana_hasta: en(23), conversation_id: "conv-c-sin-precio" },
+  ];
+  return {
+    total: 700,
+    presupuestos: { monto: 440, cantidad: 3, sin_precio: 0 },
+    carritos: { monto: 260, cantidad: 4, sin_precio: 1 },
+    por_canal: { online: { monto: 460, cantidad: 5 }, tienda: { monto: 240, cantidad: 2 } },
+    antiguedad: [
+      { tramo: "24h", monto: 550, cantidad: 5 },
+      { tramo: "3d", monto: 150, cantidad: 2 },
+      { tramo: "7d", monto: null, cantidad: 0 },
+      { tramo: "30d", monto: null, cantidad: 0 },
+    ],
+    desglose: {
+      tramos_48h: [
+        { tramo: "12h", monto: 470, cantidad: 4 },
+        { tramo: "24h", monto: 80, cantidad: 1 },
+        { tramo: "48h", monto: 150, cantidad: 2 },
+      ],
+      fuera_de_ventana: { carritos: 2, presupuestos: 4, por_origen: { carrito_chat: 2, presupuesto_chat: 1, presupuesto_inventario: 3 } },
+      por_origen: {
+        carrito_chat: { monto: 260, cantidad: 4, sin_precio: 1 },
+        presupuesto_chat: { monto: 200, cantidad: 1, sin_precio: 0 },
+        presupuesto_inventario: { monto: 240, cantidad: 2, sin_precio: 0 },
+      },
+      por_equipo: { online: { monto: 490, cantidad: 5 }, tienda: { monto: 150, cantidad: 1 }, sin_dato: { monto: 60, cantidad: 1 } },
+      por_origen_equipo: {
+        carrito_chat: { ...equiposVacios(), online: { monto: 200, cantidad: 3 }, sin_dato: { monto: 60, cantidad: 1 } },
+        presupuesto_chat: { ...equiposVacios(), online: { monto: 200, cantidad: 1 } },
+        presupuesto_inventario: { ...equiposVacios(), online: { monto: 90, cantidad: 1 }, tienda: { monto: 150, cantidad: 1 } },
+      },
+      por_ventana: {
+        abierta: { monto: 320, cantidad: 3 },
+        por_cerrar: { monto: 80, cantidad: 1 },
+        cerrada: { monto: 60, cantidad: 1 },
+        no_aplica: { monto: 240, cantidad: 2 },
+      },
+      por_canal_ventana: {
+        online: { ...ventanasVacias(), abierta: { monto: 320, cantidad: 3 }, por_cerrar: { monto: 80, cantidad: 1 }, cerrada: { monto: 60, cantidad: 1 } },
+        tienda: { ...ventanasVacias(), no_aplica: { monto: 240, cantidad: 2 } },
+      },
+    },
+    items,
+    ...extra,
+  };
+}
+
+/**
+ * Producción tal como está hoy: todo son carritos del chat, no hay
+ * presupuestos, el equipo «tienda» y «sin dato» están en 0 y hay varias
+ * ventanas. Total 260 en 4 carritos, todos online.
+ */
+export function activasComoHoy(extra: Partial<PanelVentasActivas> = {}): PanelVentasActivas {
+  const items: ItemActiva[] = [
+    { tipo: "carrito", id: "h-cerrado", canal: "online", responsable: "Asesor 1", cliente: "Rosa Díaz", monto: 30, unidades: 1, desde: hace(40), origen: "carrito_chat", equipo: "online", ventana: "cerrada", ventana_hasta: hace(16), conversation_id: "conv-h-cerrado" },
+    { tipo: "carrito", id: "h-por-cerrar", canal: "online", responsable: "Asesor 2", cliente: "Ana Gómez", monto: 50, unidades: 2, desde: hace(18), origen: "carrito_chat", equipo: "online", ventana: "por_cerrar", ventana_hasta: en(3), conversation_id: "conv-h-por-cerrar" },
+    { tipo: "carrito", id: "h-abierto-1", canal: "online", responsable: "Asesor 1", cliente: "Julia Pino", monto: 80, unidades: 1, desde: hace(6), origen: "carrito_chat", equipo: "online", ventana: "abierta", ventana_hasta: en(15), conversation_id: "conv-h-abierto-1" },
+    { tipo: "carrito", id: "h-abierto-2", canal: "online", responsable: "Asesor 2", cliente: "Luis Rojas", monto: 100, unidades: 3, desde: hace(2), origen: "carrito_chat", equipo: "online", ventana: "abierta", ventana_hasta: en(20), conversation_id: "conv-h-abierto-2" },
+  ];
+  return {
+    total: 260,
+    presupuestos: { monto: null, cantidad: 0, sin_precio: 0 },
+    carritos: { monto: 260, cantidad: 4, sin_precio: 0 },
+    por_canal: { online: { monto: 260, cantidad: 4 }, tienda: vacia() },
+    antiguedad: [
+      { tramo: "24h", monto: 230, cantidad: 3 },
+      { tramo: "3d", monto: 30, cantidad: 1 },
+      { tramo: "7d", monto: null, cantidad: 0 },
+      { tramo: "30d", monto: null, cantidad: 0 },
+    ],
+    desglose: {
+      tramos_48h: [
+        { tramo: "12h", monto: 180, cantidad: 2 },
+        { tramo: "24h", monto: 50, cantidad: 1 },
+        { tramo: "48h", monto: 30, cantidad: 1 },
+      ],
+      fuera_de_ventana: { carritos: 5, presupuestos: 0, por_origen: { carrito_chat: 5, presupuesto_chat: 0, presupuesto_inventario: 0 } },
+      por_origen: {
+        carrito_chat: { monto: 260, cantidad: 4, sin_precio: 0 },
+        presupuesto_chat: { monto: null, cantidad: 0, sin_precio: 0 },
+        presupuesto_inventario: { monto: null, cantidad: 0, sin_precio: 0 },
+      },
+      por_equipo: { ...equiposVacios(), online: { monto: 260, cantidad: 4 } },
+      por_origen_equipo: {
+        carrito_chat: { ...equiposVacios(), online: { monto: 260, cantidad: 4 } },
+        presupuesto_chat: equiposVacios(),
+        presupuesto_inventario: equiposVacios(),
+      },
+      por_ventana: {
+        abierta: { monto: 180, cantidad: 2 },
+        por_cerrar: { monto: 50, cantidad: 1 },
+        cerrada: { monto: 30, cantidad: 1 },
+        no_aplica: vacia(),
+      },
+      por_canal_ventana: {
+        online: {
+          abierta: { monto: 180, cantidad: 2 },
+          por_cerrar: { monto: 50, cantidad: 1 },
+          cerrada: { monto: 30, cantidad: 1 },
+          no_aplica: vacia(),
+        },
+        tienda: ventanasVacias(),
+      },
+    },
+    items,
+    ...extra,
+  };
+}
+
 export function activas(extra: Partial<PanelVentasActivas> = {}): PanelVentasActivas {
   return {
     total: 600,
@@ -115,13 +256,14 @@ export function activas(extra: Partial<PanelVentasActivas> = {}): PanelVentasAct
       { tramo: "7d", monto: 100, cantidad: 1 },
       { tramo: "30d", monto: 100, cantidad: 1 },
     ],
+    desglose: null,
     // El servidor los entrega del más viejo al más nuevo; los tests desordenan a propósito cuando hace falta.
     items: [
-      { tipo: "presupuesto", id: "p-viejo", canal: "tienda", responsable: "Caja 1", cliente: "Pedro Pérez", monto: 100, unidades: 2, desde: "2026-11-01T10:00:00-04:00" },
-      { tipo: "carrito", id: "c-medio", canal: "online", responsable: "Asesor 1", cliente: "Ana Gómez", monto: 100, unidades: 1, desde: "2026-11-08T10:00:00-04:00" },
-      { tipo: "presupuesto", id: "p-medio", canal: "tienda", responsable: "Caja 1", cliente: "Luis Rojas", monto: 150, unidades: 3, desde: "2026-11-10T10:00:00-04:00" },
-      { tipo: "carrito", id: "c-nuevo", canal: "online", responsable: "Asesor 2", cliente: "Rosa Díaz", monto: 250, unidades: 4, desde: "2026-11-13T09:00:00-04:00" },
-      { tipo: "presupuesto", id: "p-nuevo", canal: "online", responsable: "Asesor 2", cliente: "Marta Silva", monto: null, unidades: 1, desde: "2026-11-13T12:00:00-04:00" },
+      { tipo: "presupuesto", id: "p-viejo", canal: "tienda", responsable: "Caja 1", cliente: "Pedro Pérez", monto: 100, unidades: 2, desde: "2026-11-01T10:00:00-04:00", ...SIN_DESGLOSE_ITEM },
+      { tipo: "carrito", id: "c-medio", canal: "online", responsable: "Asesor 1", cliente: "Ana Gómez", monto: 100, unidades: 1, desde: "2026-11-08T10:00:00-04:00", ...SIN_DESGLOSE_ITEM },
+      { tipo: "presupuesto", id: "p-medio", canal: "tienda", responsable: "Caja 1", cliente: "Luis Rojas", monto: 150, unidades: 3, desde: "2026-11-10T10:00:00-04:00", ...SIN_DESGLOSE_ITEM },
+      { tipo: "carrito", id: "c-nuevo", canal: "online", responsable: "Asesor 2", cliente: "Rosa Díaz", monto: 250, unidades: 4, desde: "2026-11-13T09:00:00-04:00", ...SIN_DESGLOSE_ITEM },
+      { tipo: "presupuesto", id: "p-nuevo", canal: "online", responsable: "Asesor 2", cliente: "Marta Silva", monto: null, unidades: 1, desde: "2026-11-13T12:00:00-04:00", ...SIN_DESGLOSE_ITEM },
     ],
     ...extra,
   };
@@ -151,7 +293,7 @@ export const METAS: MetaVenta[] = [
 ];
 
 export function propsBase(extra: Partial<DashboardViewProps> = {}): DashboardViewProps {
-  const rangos = rangosDelDashboard("hoy", AHORA);
+  const rangos = rangosDelDashboard("hoy", AHORA, null);
   const horario: BusinessHours = DEFAULT_BUSINESS_HOURS;
   return {
     periodo: "hoy",

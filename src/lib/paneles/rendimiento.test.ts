@@ -1,7 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_BUSINESS_HOURS } from "@/lib/business-hours";
 import type { MetaVenta } from "./parse";
-import { curvaHoraria, faltante, metaDelDia, porcentaje, proyeccion, racha } from "./rendimiento";
+import { INICIO_PANELES } from "./periodos";
+import {
+  MIN_DIAS_CURVA,
+  curvaHoraria,
+  diasConVentasParaCurva,
+  faltante,
+  metaDelDia,
+  porcentaje,
+  proyeccion,
+  racha,
+} from "./rendimiento";
+
+// Estos tests describen el canal «tienda» visible (D1, 21/11/2026: hoy está oculto); `tienda-oculta.test.tsx` cubre el caso oculto.
+vi.mock("@/lib/paneles/canal-config", () => ({ CANAL_TIENDA_VISIBLE: true }));
 
 // 2026-11-13 es viernes; 2026-11-15 es domingo (cerrado en el horario por defecto).
 const metas: MetaVenta[] = [
@@ -96,6 +109,69 @@ describe("curvaHoraria", () => {
     const historia = Array.from({ length: 10 }, (_, i) => diaTipico(i + 1));
     historia[3] = { dia: "2026-11-04", porHora: [1, 2, 3] };
     expect(curvaHoraria(historia)).toBeNull(); // quedan 9 válidos
+  });
+});
+
+describe("curvaHoraria y el piso del 16/11/2026 (D2, A2)", () => {
+  // Un día típico en la fecha dada (YYYY-MM-DD).
+  const tipicoEn = (dia: string) => {
+    const porHora = new Array<number>(24).fill(0);
+    porHora[10] = 100;
+    porHora[11] = 100;
+    return { dia, porHora };
+  };
+  const sinVentas = (dia: string) => ({ dia, porHora: new Array<number>(24).fill(0) });
+  // Días consecutivos desde el 16/11 (los 9 y los 12 de abajo caben en noviembre).
+  const desdeElPiso = (n: number) => Array.from({ length: n }, (_, i) => tipicoEn(`2026-11-${String(16 + i).padStart(2, "0")}`));
+  const anteriores = (n: number) => Array.from({ length: n }, (_, i) => tipicoEn(`2026-11-${String(1 + i).padStart(2, "0")}`));
+
+  it("el mínimo son 10 días", () => {
+    expect(MIN_DIAS_CURVA).toBe(10);
+  });
+
+  it("9 días válidos desde el piso → sin curva y van 9", () => {
+    const historia = desdeElPiso(9);
+    expect(curvaHoraria(historia, INICIO_PANELES)).toBeNull();
+    expect(diasConVentasParaCurva(historia, INICIO_PANELES)).toBe(9);
+  });
+
+  it("10 días válidos desde el piso → hay curva", () => {
+    const historia = desdeElPiso(10);
+    expect(curvaHoraria(historia, INICIO_PANELES)).not.toBeNull();
+    expect(diasConVentasParaCurva(historia, INICIO_PANELES)).toBe(10);
+  });
+
+  it("12 días de los que 3 no tuvieron ventas → 9 válidos y sin curva: los días sin ventas no cuentan", () => {
+    const historia = [
+      ...desdeElPiso(9),
+      sinVentas("2026-11-25"),
+      sinVentas("2026-11-26"),
+      sinVentas("2026-11-27"),
+    ];
+    expect(historia).toHaveLength(12);
+    expect(curvaHoraria(historia, INICIO_PANELES)).toBeNull();
+    expect(diasConVentasParaCurva(historia, INICIO_PANELES)).toBe(9);
+  });
+
+  it("9 días desde el piso más 5 válidos anteriores al piso → sin curva: los anteriores no cuentan", () => {
+    const historia = [...anteriores(5), ...desdeElPiso(9)];
+    expect(curvaHoraria(historia, INICIO_PANELES)).toBeNull();
+    expect(diasConVentasParaCurva(historia, INICIO_PANELES)).toBe(9);
+  });
+
+  it("el día del piso mismo cuenta (es inclusivo)", () => {
+    expect(diasConVentasParaCurva([tipicoEn("2026-11-16")], INICIO_PANELES)).toBe(1);
+    expect(diasConVentasParaCurva([tipicoEn("2026-11-15")], INICIO_PANELES)).toBe(0);
+  });
+
+  it("sin piso (null) cuenta todos los días válidos, como antes", () => {
+    const historia = [...anteriores(5), ...desdeElPiso(5)];
+    expect(diasConVentasParaCurva(historia)).toBe(10);
+    expect(curvaHoraria(historia)).not.toBeNull();
+  });
+
+  it("una forma que no es de 24 horas no cuenta, con o sin piso", () => {
+    expect(diasConVentasParaCurva([{ dia: "2026-11-20", porHora: [1, 2, 3] }], INICIO_PANELES)).toBe(0);
   });
 });
 

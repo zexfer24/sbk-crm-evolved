@@ -3,6 +3,7 @@
 import { useMemo, useState, type ReactNode } from "react";
 import { ArrowDown } from "lucide-react";
 import { PanelHoja } from "@/components/paneles/panel-hoja";
+import { tiendaVisible } from "@/lib/paneles/canal";
 import { formatoUsd } from "@/components/paneles/panel-marco";
 import { HojaPersona } from "./hoja-persona";
 import { formatoFechaHora, formatoMinutos, formatoPorcentaje, iniciales } from "./formato";
@@ -72,9 +73,11 @@ function celdas(fila: FilaPersona, abrir: () => void): Record<ColumnaId, ReactNo
     envios: (
       <>
         <span className="as-v">{entero(p.envios)}</span>
-        <small>
-          {p.envios_online} online · {p.envios_tienda} tienda
-        </small>
+        {tiendaVisible() && (
+          <small>
+            {p.envios_online} online · {p.envios_tienda} tienda
+          </small>
+        )}
       </>
     ),
     monto: <span className="as-v">{formatoUsd(p.monto)}</span>,

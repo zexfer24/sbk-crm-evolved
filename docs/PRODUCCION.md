@@ -3282,6 +3282,91 @@ que entren mientras esté quitado).
 
 ---
 
+## 21. La tasa BCV no vuelve a quedarse sin leer (21/11/2026)
+
+El 19/11/2026 el BCV renovó el certificado de `bcv.org.ve` (lo firma ahora Sectigo
+OV R36, que el contenedor no traía) y desde esa hora cada lectura falló con
+`unable to verify the first certificate`. Nadie lo vio en dos días: el único aviso era
+un `console.error` por minuto. Las tasas del 20/11 (918,7662) y del 24/11 (919,8227) se
+cargaron a mano. Esta entrega arregla la cadena y deja el fallo visible. Reporte para el
+Claude del VPS: `docs/entregas/2026-11-21-bcv-cadena-tls.md`.
+
+**El código va ANTES que la migración.** Sin la tabla `bcv_fetch_status` todo sigue igual,
+con un contador en memoria. La migración puede aplicarse después del deploy, en cualquier
+momento antes de mirar el chip de la bandeja.
+
+### Migración
+
+```bash
+psql -1 -v ON_ERROR_STOP=1 -f supabase/migrations/20261121010000_bcv_fetch_status.sql
+```
+
+Crea la tabla de una fila `bcv_fetch_status`, la RPC `bcv_registrar_intento` (solo
+service_role) y el backfill de `last_success_at` con el último `fetched_at` de
+`source = 'bcv.org.ve'`. Las filas manuales NO cuentan. Si el procedimiento del VPS
+registra las migraciones en `schema_migrations`, hacerlo igual que con las anteriores.
+
+### Verificación, en este orden
+
+1. **Sin el error de cadena en los logs** (en el contenedor de la app, desde el deploy):
+
+   ```bash
+   docker logs <contenedor-app> --since 30m 2>&1 | grep -cE "unable to verify the first certificate|bcv_lectura_fallida|bcv_aia_fallo"
+   ```
+
+   Debe dar `0`.
+
+2. **La tasa se relee.** En la base, la fila más reciente de BCV:
+
+   ```sql
+   select rate_date, usd_to_ves, fetched_at
+   from exchange_rates
+   where source = 'bcv.org.ve'
+   order by fetched_at desc
+   limit 3;
+   ```
+
+   `fetched_at` tiene que moverse en el siguiente horario de lectura (00, 06, 12 o 18 hora de
+   Venezuela). Una tasa nueva de `rate_date` aparece cuando el BCV la publica.
+
+3. **El simulacro de la cadena por AIA.** Arma la cadena con las raíces del sistema y SOLO
+   el intermedio DV R36 (sin el OV), busca por AIA y NO escribe en la base:
+
+   ```bash
+   curl -s -X POST "https://<tu-dominio>/api/cron/bcv-refresh?simulacro=aia" \
+     -H "Authorization: Bearer $CRON_SECRET"
+   ```
+
+   Respuesta esperada: HTTP 200 con `"simulacro":"aia"`, `"ok":true` y
+   `"armadoPorAia":true`. Medido en local el 21/11/2026 contra el BCV real, el intermedio
+   que encontró por AIA tiene sha256
+   `65:42:D1:76:BE:D5:0F:19:3C:0C:E2:97:AE:44:EC:D8:A0:A8:6B:EC:2E:DE:68:27:69:34:40:59:B4:E7:85:30`.
+   Un 502 significa que el AIA no alcanzó: revisar `bcv_intermedio_descargado` y los hosts
+   permitidos (`.sectigo.com`, `.usertrust.com`, `.comodoca.com`).
+
+4. **El estado de la lectura.** Tras la primera lectura buena:
+
+   ```sql
+   select last_attempt_at, last_success_at, last_failure_at, consecutive_failures
+   from bcv_fetch_status;
+   ```
+
+   `consecutive_failures = 0` y `last_success_at` reciente.
+
+5. **Los logs de la lectura.** `bcv_lectura_recuperada` aparece una vez tras el primer éxito
+   después de los fallos. Si `bcv_sin_actualizar` aparece, quiere decir que hubo 240 fallos
+   seguidos (~4 h de cron) y el chip de la bandeja ya debería estar rojo.
+
+### Lo que esta entrega NO hace
+
+- **El aviso a Seba (la IA) sobre la tasa vieja queda fuera**, por decisión del operador.
+  Como nota técnica pendiente: la cotización la arma el código (`quote-message.ts`) y
+  reemplaza el texto del modelo, así que haría falta una línea fija ahí. Con una tasa
+  vieja lo que se desfasa es el "$ BCV" (Bs ÷ tasa), no el Bs de SAINT.
+- **No hay variables de entorno nuevas.** El simulacro usa el mismo `CRON_SECRET` de siempre.
+
+---
+
 ## Comprobación final
 
 Con todo configurado, esta lista debe pasar entera:
@@ -3301,7 +3386,7 @@ Con todo configurado, esta lista debe pasar entera:
       rompe si alguien revoca `authenticated` de `agent_metrics` por error,
       creyendo que hay que cerrarla igual que las del lock de turno)
 
-## 21. Lectura de fotos y audios (16/11/2026)
+## 22. Lectura de fotos y audios (16/11/2026)
 
 - Migración `20261116010000_lecturas_de_media.sql`: se aplica ANTES del código, con `psql -1 -v ON_ERROR_STOP=1`. Crea `message_readings`, la publica en Realtime, redefine `agent_spend_today()` para sumar el costo de las lecturas y carga la tarifa de `openai/gpt-5.4`. **El código NO puede llegar antes que la migración:** la consulta de mensajes del chat (`MESSAGE_SELECT`) y el historial del turno (`loadHistory`) embeben `message_readings`, y sin la tabla PostgREST responde 400: el chat no carga los mensajes y Seba se queda sin historial. (El webhook sí lo tolera: deja `lectura_no_registrada` en el log y no llama al proveedor.) Volver atrás el código con la migración ya aplicada no rompe nada.
 - La lectura corre con la IA apagada: le sirve al asesor en el chat. La cortan el tope de gasto diario y `AI_MEDIA_READING=off`.
@@ -3310,27 +3395,27 @@ Con todo configurado, esta lista debe pasar entera:
 - Qué medir después del deploy: que cada audio o imagen nuevo tenga su fila; el p50 de `duration_ms`; el costo por día (`select sum(cost_usd) from message_readings where created_at >= current_date`); el porcentaje de `alucinacion` y de `fallo` por `error`; y una lectura manual de 30 transcripciones y 30 descripciones.
 - Eventos de log: `lectura_media` (por lectura, sin contenido), `lectura_no_registrada`, `lectura_no_guardada`, `lectura_sin_tarifa`, `lectura_tope_no_consultable`, `turno_espero_lecturas`, `espera_lecturas_fallo`.
 
-## 22. Datos del negocio para Seba v2 (16/11/2026)
+## 23. Datos del negocio para Seba v2 (16/11/2026)
 
 - Dos migraciones, en este orden y DESPUÉS de `20261116010000`: `20261116020000_formas_de_pago.sql` (tabla `payment_methods`) y `20261116030000_seba_v2_configuracion.sql` (columnas nuevas en `agent_settings`, `agents.areas`, y `conversations.escalation_area` / `seba_pedido`). Cada una con `psql -1 -v ON_ERROR_STOP=1`: sin `-1` abortan solas por la guarda de `lock_timeout`. Son idempotentes y terminan con `notify pgrst`. La segunda toma un candado breve sobre `agents` y `conversations`; si corta por `lock_timeout` (5 s) se reintenta, no deja nada a medias.
 - **El código NO puede llegar antes que `20261116030000`:** desde esta entrega la lista de la bandeja pide `conversations.escalation_area`, y sin la columna PostgREST responde 400 a TODA la bandeja. Control IA sí lo tolera: sin las columnas, la pestaña «Seba v2» dice «No disponible» y no pinta casillas de área. Volver atrás el código con las migraciones aplicadas no rompe nada.
 - **Las formas de pago reales las carga el VPS, no el repositorio** (es público). La migración no inserta filas y `supabase/seed.sql` (que no va a producción) trae tres inventadas. Se cargan desde Control IA → «Seba v2» → «Formas de pago» con un usuario supervisor, o por SQL: `insert into public.payment_methods (key, label, currency, instructions, seba_entrega, sort_order) values (...)`. Claves sugeridas: `pago_movil`, `transferencia`, `binance` (esta con `seba_entrega = false`: Seba la ofrece y pasa a ventas). La clave `cashea` está prohibida por CHECK y una clave no se puede cambiar después: la usará la herramienta de pago de Seba v2.
-- `agent_settings.seba_v2_modo` nace `apagado` y **hasta la entrega 3 nadie lo lee** (SUPERADO el 17/11/2026: desde la entrega 3 lo lee el webhook y el turno, ver la sección 23): Seba v2 llegó en la entrega siguiente. Cambiarlo desde el panel solo guarda el valor. Encender la sombra será una decisión del operador que ejecuta el VPS, con esa entrega desplegada.
+- `agent_settings.seba_v2_modo` nace `apagado` y **hasta la entrega 3 nadie lo lee** (SUPERADO el 17/11/2026: desde la entrega 3 lo lee el webhook y el turno, ver la sección 24): Seba v2 llegó en la entrega siguiente. Cambiarlo desde el panel solo guarda el valor. Encender la sombra será una decisión del operador que ejecuta el VPS, con esa entrega desplegada.
 - Los textos de bienvenida y de Cashea nacen con los aprobados el 16/11 (`docs/seba-v2/system-prompt-seba-v2.md`, sección 3) y se editan desde el mismo panel. `agents.areas` nace con las cuatro áreas para todos; se cambian en Control IA → «Agentes», y solo un supervisor o admin puede (un trigger se lo impide al propio asesor).
 - Qué comprobar después de aplicar: `select seba_v2_modo, shadow_daily_cap_usd, cardinality(welcome_followups) from agent_settings;` da `apagado | 5.00 | 4`; `select count(*) from agents where areas is null;` da 0; `select count(*) from payment_methods;` da 0 hasta cargarlas; y la bandeja abre con el código nuevo. La píldora «Área» queda vacía hasta que Seba v2 escriba `escalation_area`.
 - Sin variables de entorno nuevas.
 
-## 23. Seba v2: del arnés a la sombra, al copiloto y al encendido (17/11/2026)
+## 24. Seba v2: del arnés a la sombra, al copiloto y al encendido (17/11/2026)
 
 Seba v2 es un agente nuevo que convive con el de siempre (v1). Se elige con `agent_settings.seba_v2_modo`: `apagado` (de fábrica), `sombra`, `copiloto`, `fuera_de_horario` o `siempre`. Hay que subirlo escalón por escalón, y cada escalón se mide antes de pasar al siguiente. Sin variables de entorno nuevas en producción: v2 usa el mismo modelo y las mismas llaves que v1.
 
-### 23.1 Qué cambia y qué NO con el modo `apagado`
+### 24.1 Qué cambia y qué NO con el modo `apagado`
 
 Con `apagado` **nada cambia**: v1 atiende igual que ayer, el webhook encola igual, no se escribe ni una fila en las tablas nuevas y la pestaña «Sombra» de Control IA sale vacía. Desplegar el código con el modo `apagado` es seguro. Lo único que ya cambia, con cualquier modo, es lo que se ve: la pestaña «Sombra» en Control IA (solo para supervisor y admin) y el rótulo «Seba» en los renglones del carrito que Seba v2 ponga (ninguno, mientras no atienda).
 
-### 23.2 Orden: migraciones ANTES del código, y el verificador
+### 24.2 Orden: migraciones ANTES del código, y el verificador
 
-1. Las migraciones de las entregas 1 y 2 (sección 21 y 22) si todavía faltan: `20261116010000`, `20261116020000`, `20261116030000`, en ese orden. Después, la de esta entrega: `20261117010000_seba_v2_sombra.sql`.
+1. Las migraciones de las entregas 1 y 2 (sección 22 y 23) si todavía faltan: `20261116010000`, `20261116020000`, `20261116030000`, en ese orden. Después, la de esta entrega: `20261117010000_seba_v2_sombra.sql`.
 2. Cada una con `-1`: la cabecera trae una guarda que ABORTA sin transacción (`set local lock_timeout` fuera de una transacción es un no-op).
 
 ```bash
@@ -3352,11 +3437,11 @@ docker exec -i supabase-db psql -U postgres -d postgres -v ON_ERROR_STOP=1 \
 
 Si falta algo de las entregas 1 o 2, el verificador lo dice y remite a `scripts/sql/2026-11-16-verificar-seba-v2.sql`. **El código NO puede llegar antes que esta migración:** el panel «Sombra» y la sugerencia de copiloto leen `agent_shadow_drafts` (sin la tabla, PostgREST responde 400), y el turno de v2 lee y escribe las columnas nuevas. Con el modo `apagado` nada de eso corre, pero el panel sí consulta al abrir la pestaña. Volver atrás el código con la migración aplicada no rompe nada.
 
-### 23.3 Antes de encender nada: los datos del negocio
+### 24.3 Antes de encender nada: los datos del negocio
 
-Seba v2 entrega datos de pago y textos de bienvenida y de Cashea que el repositorio (público) no trae. Antes de pasar a `sombra`, con un supervisor: cargar las formas de pago reales y revisar la bienvenida y los textos de Cashea en Control IA → «Seba v2», como dice la sección 22. Sin formas de pago activas, el turno de v2 no puede armar un pago de contado y pasa el caso a ventas.
+Seba v2 entrega datos de pago y textos de bienvenida y de Cashea que el repositorio (público) no trae. Antes de pasar a `sombra`, con un supervisor: cargar las formas de pago reales y revisar la bienvenida y los textos de Cashea en Control IA → «Seba v2», como dice la sección 23. Sin formas de pago activas, el turno de v2 no puede armar un pago de contado y pasa el caso a ventas.
 
-### 23.4 Paso «arnés»: probar el turno real contra producción, sin escribir
+### 24.4 Paso «arnés»: probar el turno real contra producción, sin escribir
 
 El arnés de turnos corre el turno real de Seba v2 sobre casos armados a mano, con efectos de memoria y `persistencia: "ninguna"`: lee de la base (conversaciones, formas de pago, catálogo) pero **no escribe nada**, ni en la base, ni en Redis, ni en WhatsApp. Está fuera de `npm test` y del CI, a propósito, porque llama al modelo de verdad y cuesta unos centavos por caso.
 
@@ -3371,7 +3456,7 @@ ARNES_SUPABASE_URL=https://<api-de-produccion> ARNES_SUPABASE_KEY=<service_role>
 - **Qué exige:** cada caso pasa por diez chequeos (producto válido y de la misma categoría, ninguna cifra sin fuente en el turno, pasa a la persona y al área que debía y no pasa cuando no debía, datos de pago correctos, ninguna frase prohibida, máximo tres mensajes, ninguna guarda de salida disparada, comprobante con pase). De ahí salen las **puertas «arnés → sombra»**: en los casos `saint`, producto válido en al menos el 95 % y cero fallos de «misma categoría»; cero fallos de «cifra sin fuente» en toda la corrida; y cero fallos de «comprobante con pase». La corrida deja un **reporte en Markdown** (`privado/seba-v2/reporte-<fecha>.md`, ignorado por git; la corrida imprime su ruta) con la tasa por chequeo y por fuente, la puerta (ABIERTA o CERRADA), el costo estimado y la duración, y cuenta los intentos de escritura, que tienen que ser cero: el cliente de Supabase del arnés es un envoltorio que LANZA ante cualquier escritura (segunda barrera, además de los efectos de memoria). **No pasar a `sombra` con la puerta cerrada**, ni con casos rojos que no se entienden: una guarda que reescribe o un respaldo que sale seguido es una señal aunque el caso técnicamente pase.
 - No lo corras contra una base de pruebas con datos inventados y creas que midió producción: el catálogo, las formas de pago y los asesores que lee son los de la base que le indiques.
 
-### 23.5 Paso «sombra»
+### 24.5 Paso «sombra»
 
 La sombra hace que Seba v2 redacte el turno completo **sin enviarlo** y lo guarde como borrador en `agent_shadow_drafts`, mientras v1 sigue atendiendo igual. Solo lo ve el supervisor (pestaña «Sombra»).
 
@@ -3415,7 +3500,7 @@ select public.shadow_spend_today();
 6. **Revisar** (supervisor): en la pestaña «Sombra», abrir cada borrador, ver lo que escribió el cliente, lo que Seba habría enviado y lo que contestó el asesor, y dejar la revisión (veredicto, tipo de error, corrección, destino). Ese es el material para decidir si se pasa al siguiente escalón.
 7. **Decidir con números** (migración `20261117020000`): la misma pestaña muestra «Preparación para desplegar» y «Consumo». La preparación es un porcentaje por eje (búsqueda de repuestos, conversación, montos y pago) que sale SOLO de las revisiones del paso 6; un eje no muestra número hasta tener 30, 30 y 10 revisiones, el número general es el del eje más flojo y con 90 % en los tres la sombra está lista para el copiloto. **La sombra no aprende sola**: el porcentaje sube cuando las correcciones se convierten en lecciones (Control IA → «Lecciones») o en ajustes del guion, no por dejarla correr. El consumo trae el gasto por día, el costo por borrador y lo que costaría al 100 % de muestreo.
 
-### 23.6 Paso «copiloto»
+### 24.6 Paso «copiloto»
 
 `copiloto` es `sombra` más una cosa: el asesor ve el borrador como **sugerencia sobre el composer** del chat, con Enviar, Editar y Descartar.
 
@@ -3438,7 +3523,7 @@ select (created_at at time zone 'America/Caracas')::date as dia,
 - Un asesor lee solo los borradores de `copiloto` (nunca los de `sombra`) y solo puede resolver la sugerencia (permiso por columna): no puede reescribir los mensajes.
 - Un cambio de modo desde Control IA se nota en el chat de un asesor al recargar la bandeja.
 
-### 23.7 Pasos «fuera de horario» y «siempre»
+### 24.7 Pasos «fuera de horario» y «siempre»
 
 Son los dos modos en que v2 **atiende de verdad** y le escribe al cliente:
 
@@ -3449,7 +3534,7 @@ Son los dos modos en que v2 **atiende de verdad** y le escribe al cliente:
 - **El turno por demora del asesor** (sección 16, el que contesta cuando el asesor no responde en 10 minutos) **sigue siendo de v1** en todos los modos.
 - Recomendación: pasar a `fuera_de_horario` primero (el riesgo es menor: de noche y los domingos), medir unos días con `agent_turns` (`agent_version`, `escalation_motivo`, `escalation_area`) y recién entonces `siempre`.
 
-### 23.8 Vuelta atrás
+### 24.8 Vuelta atrás
 
 Poner el modo en `apagado`, desde Control IA → «Seba v2» o con una línea:
 
@@ -3459,7 +3544,7 @@ update public.agent_settings set seba_v2_modo = 'apagado' where id;
 
 Tiene efecto en el siguiente turno. No hace falta redeploy ni revertir migraciones: las tablas y columnas nuevas se quedan quietas. Los borradores ya guardados siguen visibles en la pestaña «Sombra». Si la sombra se está comiendo el proveedor y no se puede esperar al panel, bajar el muestreo a 0 (`update public.agent_settings set shadow_sample_pct = 0 where id;`) la frena sin tocar el modo.
 
-### 23.9 Lo que NO se pudo verificar antes de producción
+### 24.9 Lo que NO se pudo verificar antes de producción
 
 - **El modelo real con el guion de v2.** Los tests y las pruebas de mutación corren con el modelo simulado: demuestran que el código arma, guarda y filtra bien, no que el modelo siga el guion. En la máquina de desarrollo no hay llave del modelo.
 - **Los casos privados del VPS.** Los casos reales (conversaciones de clientes) no viven en el repositorio y no se pudieron correr; solo el caso sintético de ejemplo.

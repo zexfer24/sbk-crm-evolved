@@ -1,11 +1,12 @@
 "use client";
 
 import { useState, type CSSProperties } from "react";
-import type { Vista } from "@/lib/paneles/canal";
+import { tiendaVisible, type Vista } from "@/lib/paneles/canal";
+import { TEXTO_INICIO_PANELES } from "@/lib/paneles/periodos";
 import type { PanelVentas } from "@/lib/paneles/parse";
 import { formatoUsd } from "@/components/paneles/panel-marco";
 import { ingresosPorMes } from "@/components/paneles/dashboard/calculos";
-import { mesesDesdeElPrimerEnvio } from "@/lib/paneles/meses";
+import { mesesDelTablero, rotuloDelMes } from "@/lib/paneles/meses";
 import { crmDayKey } from "@/lib/sales-day";
 
 /**
@@ -19,13 +20,13 @@ import { crmDayKey } from "@/lib/sales-day";
  * una barra que se pueda enfocar adentro de una imagen no es accesible. La
  * lectura exacta con ratón sale arriba del dibujo.
  *
- * Desde el 15/11/2026 arranca en el primer mes con algún envío, igual que el
- * «Mes a mes» de Analíticas (`mesesDesdeElPrimerEnvio`, regla compartida): los
- * envíos a SAINT se registran desde el 26/10/2026 y enero a septiembre en
- * blanco se leían como «no vendimos». El primer mes se decide con los dos
- * canales juntos, no con el que filtra la vista, para que cambiar de vista no
+ * Desde el 15/11/2026 arranca en el primer mes con algún envío y desde el
+ * 21/11/2026 en el mes del piso de los paneles (`mesesDelTablero`, regla
+ * compartida con el «Mes a mes» de Analíticas): enero a octubre en blanco se
+ * leían como «no vendimos». El primer mes lo decide el piso (o, sin él, los dos
+ * canales juntos), no el canal que filtra la vista, para que cambiar de vista no
  * mueva el eje. Los meses que faltan del año (el mes en curso y los futuros)
- * siguen, atenuados. Sin envíos en el año, estado vacío.
+ * siguen, atenuados. El mes del piso va rotulado «Nov (desde el 16)».
  */
 
 const MESES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
@@ -49,12 +50,15 @@ export function TableroMensual({
   vista,
   anio,
   mesActual,
+  piso = null,
 }: {
   ventas: PanelVentas;
   vista: Vista;
   anio: number;
   /** 1–12: el mes en curso, que se marca. */
   mesActual: number;
+  /** El piso de datos de los paneles (`rangos.piso`); `null` conserva el corte por primer envío. */
+  piso?: Date | null;
 }) {
   const [leido, setLeido] = useState<number | null>(null);
 
@@ -66,11 +70,13 @@ export function TableroMensual({
     if (a === anio) enviosPorMes[m - 1] += p.envios_online + p.envios_tienda;
   }
   const delAnio = ingresosPorMes(ventas, anio).map((m) => ({ ...m, envios: enviosPorMes[m.mes - 1] }));
-  const meses = mesesDesdeElPrimerEnvio(delAnio).map((m) => ({
+  // D1 (21/11/2026): con la tienda oculta el resumen es UNA sola serie (el total de los dos canales, color online), sin segmento ni leyenda de tienda.
+  const desglosar = tiendaVisible();
+  const meses = mesesDelTablero(delAnio, anio, piso).map((m) => ({
     ...m,
     // Lo que cuenta la vista: un canal, o los dos apilados en el resumen.
-    online: vista === "tienda" ? 0 : m.online,
-    tienda: vista === "online" ? 0 : m.tienda,
+    online: vista === "tienda" ? 0 : desglosar || vista !== "resumen" ? m.online : m.online + m.tienda,
+    tienda: vista === "online" || !desglosar ? 0 : m.tienda,
   }));
 
   const totales = meses.map((m) => m.online + m.tienda);
@@ -81,10 +87,10 @@ export function TableroMensual({
   const posActual = meses.findIndex((m) => m.mes === mesActual);
   const mostrado = leido ?? (posActual >= 0 ? posActual : 0);
   const m = meses[mostrado];
-  const nombreMostrado = m ? MESES[m.mes - 1] : "";
+  const nombreMostrado = m ? rotuloDelMes(MESES[m.mes - 1], anio, m.mes, piso) : "";
   const lectura = !m
     ? ""
-    : vista === "resumen"
+    : vista === "resumen" && desglosar
       ? `${nombreMostrado}: online ${formatoUsd(m.online)} · en tienda ${formatoUsd(m.tienda)} · total ${formatoUsd(totales[mostrado])}`
       : `${nombreMostrado}: ${formatoUsd(totales[mostrado])}`;
 
@@ -136,7 +142,7 @@ export function TableroMensual({
                       {mes.online > 0 && <i className="pd-mes__seg pd-mes__seg--online" style={{ flexGrow: mes.online }} />}
                     </div>
                   </div>
-                  <span className="pd-mes__etq">{MESES[mes.mes - 1]}</span>
+                  <span className="pd-mes__etq">{rotuloDelMes(MESES[mes.mes - 1], anio, mes.mes, piso)}</span>
                 </div>
               );
             })}
@@ -146,10 +152,10 @@ export function TableroMensual({
             {vista !== "tienda" && (
               <li className="pn-leyenda__item">
                 <span className="pn-leyenda__sw pd-sw-online" aria-hidden="true" />
-                <span>Online</span>
+                <span>{!desglosar && vista === "resumen" ? "Total" : "Online"}</span>
               </li>
             )}
-            {vista !== "online" && (
+            {vista !== "online" && desglosar && (
               <li className="pn-leyenda__item">
                 <span className="pn-leyenda__sw pd-sw-tienda" aria-hidden="true" />
                 <span>En tienda</span>
@@ -163,10 +169,11 @@ export function TableroMensual({
         </>
       )}
 
-      <p className="pn-kpi__pie">
-        Los envíos a SAINT se registran desde el 26 de octubre de 2026: por eso el tablero empieza en el primer mes con envíos y los meses anteriores no
-        tienen datos.
-      </p>
+      {piso !== null && meses.length > 0 && meses[0].mes > 1 && (
+        <p className="pn-kpi__pie">
+          {TEXTO_INICIO_PANELES}: por eso el tablero empieza en {MESES_LARGOS[meses[0].mes - 1]}.
+        </p>
+      )}
 
       {meses.length > 0 && (
         <table className="pn-sr">
@@ -174,17 +181,25 @@ export function TableroMensual({
           <thead>
             <tr>
               <th scope="col">Mes</th>
-              <th scope="col">Online</th>
-              <th scope="col">En tienda</th>
+              {desglosar && (
+                <>
+                  <th scope="col">Online</th>
+                  <th scope="col">En tienda</th>
+                </>
+              )}
               <th scope="col">Total</th>
             </tr>
           </thead>
           <tbody>
             {meses.map((mes, i) => (
               <tr key={mes.mes}>
-                <th scope="row">{MESES_LARGOS[mes.mes - 1]}</th>
-                <td>{formatoUsd(mes.online)}</td>
-                <td>{formatoUsd(mes.tienda)}</td>
+                <th scope="row">{rotuloDelMes(MESES_LARGOS[mes.mes - 1], anio, mes.mes, piso)}</th>
+                {desglosar && (
+                  <>
+                    <td>{formatoUsd(mes.online)}</td>
+                    <td>{formatoUsd(mes.tienda)}</td>
+                  </>
+                )}
                 <td>{formatoUsd(totales[i])}</td>
               </tr>
             ))}

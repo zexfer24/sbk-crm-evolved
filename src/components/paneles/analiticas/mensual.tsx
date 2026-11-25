@@ -1,12 +1,13 @@
 "use client";
 
 import type { Bloque } from "@/lib/paneles-data";
-import type { Vista } from "@/lib/paneles/canal";
+import { tiendaVisible, type Vista } from "@/lib/paneles/canal";
 import type { PanelVentas } from "@/lib/paneles/parse";
 import { todayKey } from "@/lib/sales-day";
 import { PanelBloque } from "@/components/paneles/panel-marco";
 import { BarrasVerticales, type SerieGrafico } from "@/components/paneles/panel-graficos";
-import { mesesDesdeElPrimerEnvio } from "@/lib/paneles/meses";
+import { esMesRecortadoPorElPiso, mesesDelTablero, rotuloDelMes } from "@/lib/paneles/meses";
+import { TEXTO_INICIO_PANELES } from "@/lib/paneles/periodos";
 import { MESES_LARGOS, mesesDelAnio, variacionPct, type MesDelAnio } from "./datos";
 import { formatoEntero, formatoUsd, textoVariacion, usdGrafico } from "./formato";
 
@@ -16,18 +17,24 @@ import { formatoEntero, formatoUsd, textoVariacion, usdGrafico } from "./formato
  * tabla que dice lo mismo con todas las etiquetas (el gráfico, con 11 o 12
  * barras, rotula una de cada dos).
  *
- * No hay «2026 contra 2025»: sin envíos a SAINT antes del 26/10/2026 no hay
- * con qué comparar un año anterior.
+ * No hay «2026 contra 2025»: la foto de los envíos a SAINT empezó a guardarse a
+ * finales de octubre de 2026, así que no hay con qué comparar un año anterior.
  *
  * Desde el 15/11/2026 la tabla y el gráfico arrancan en el primer mes con algún
  * envío: enero a septiembre no tienen registro y pintarlos en $0,00 con «—»
  * parecía «no tuvimos ventas en marzo». Se cortó también el gráfico (no solo la
- * tabla) para que los dos cuenten lo mismo; la nota dice por qué no hay meses
- * anteriores. Sin ningún envío en el año, un aviso en vez de doce meses en cero.
+ * tabla) para que los dos cuenten lo mismo. Sin ningún envío en el año, un aviso
+ * en vez de doce meses en cero.
+ *
+ * Desde el 21/11/2026 el corte es el piso de los paneles (`mesesDelTablero`):
+ * arranca en el mes del piso, que lleva el rótulo «Nov (desde el 16)», y la
+ * variación del mes SIGUIENTE es «—» porque su mes previo viene recortado.
  */
 
 const SERIE_ONLINE: SerieGrafico = { id: "online", nombre: "Online", color: "var(--pn-online)" };
 const SERIE_TIENDA: SerieGrafico = { id: "tienda", nombre: "En tienda", color: "var(--pn-tienda)" };
+// D1 (21/11/2026): con la tienda oculta el resumen es UNA serie, el total de los dos canales, en el color online.
+const SERIE_TOTAL: SerieGrafico = { id: "total", nombre: "Total", color: "var(--pn-online)" };
 
 function totalDe(mes: MesDelAnio, vista: Vista): number {
   return vista === "resumen" ? mes.online + mes.tienda : mes[vista];
@@ -37,22 +44,34 @@ export function IngresosMensuales({
   ventasAnio,
   vista,
   ahora,
+  piso = null,
 }: {
   ventasAnio: Bloque<PanelVentas>;
   vista: Vista;
   ahora: Date;
+  /** El piso de datos de los paneles (`rangos.piso`); `null` conserva el corte por primer envío. */
+  piso?: Date | null;
 }) {
   return (
     <div className="pn-c12">
       <PanelBloque bloque={ventasAnio} nombre="Ingresos mes a mes">
         {(dato) => {
           const delAnio = mesesDelAnio(dato.serie, ahora);
-          const meses = mesesDesdeElPrimerEnvio(delAnio);
+          const anio = Number(todayKey(ahora).slice(0, 4));
+          const meses = mesesDelTablero(delAnio, anio, piso);
+          // «Nov» → «Nov (desde el 16)» solo en el mes del piso (`mes` de la tabla es 0 = enero).
+          const rotulo = (m: MesDelAnio, etiqueta: string) => rotuloDelMes(etiqueta, anio, m.mes + 1, piso);
           const mesesOmitidos = delAnio.length - meses.length;
           const primerMes = meses.length > 0 ? MESES_LARGOS[meses[0].mes] : null;
-          const series = vista === "resumen" ? [SERIE_ONLINE, SERIE_TIENDA] : [vista === "online" ? SERIE_ONLINE : SERIE_TIENDA];
+          const desglosar = tiendaVisible();
+          const series =
+            vista === "resumen"
+              ? desglosar
+                ? [SERIE_ONLINE, SERIE_TIENDA]
+                : [SERIE_TOTAL]
+              : [vista === "online" ? SERIE_ONLINE : SERIE_TIENDA];
           const totalAnio = meses.reduce((suma, m) => suma + totalDe(m, vista), 0);
-          const resumen = `Ingresos por mes de ${todayKey(ahora).slice(0, 4)}: ${meses
+          const resumen = `Ingresos por mes de ${anio}: ${meses
             .map((m) => `${MESES_LARGOS[m.mes].toLowerCase()} ${usdGrafico(Math.round(totalDe(m, vista)))}`)
             .join(", ")}.`;
 
@@ -76,8 +95,8 @@ export function IngresosMensuales({
                 <>
                   <BarrasVerticales
                     categorias={meses.map((m) => ({
-                      etiqueta: m.etiqueta,
-                      valores: vista === "resumen" ? [m.online, m.tienda] : [m[vista]],
+                      etiqueta: rotulo(m, m.etiqueta),
+                      valores: vista === "resumen" ? (desglosar ? [m.online, m.tienda] : [totalDe(m, vista)]) : [m[vista]],
                     }))}
                     series={series}
                     apiladas
@@ -99,7 +118,7 @@ export function IngresosMensuales({
                       <thead>
                         <tr>
                           <th scope="col">Mes</th>
-                          {vista === "resumen" && (
+                          {vista === "resumen" && desglosar && (
                             <>
                               <th scope="col" className="pn-der an-oculta-m">
                                 Online
@@ -123,12 +142,14 @@ export function IngresosMensuales({
                   <tbody>
                     {meses.map((m, i) => {
                       const total = totalDe(m, vista);
-                      const previo = i > 0 ? totalDe(meses[i - 1], vista) : null;
+                      // El mes previo del que sigue al del piso viene recortado: compararlo sería «mes entero contra medio mes».
+                      const previoRecortado = i > 0 && esMesRecortadoPorElPiso(anio, meses[i - 1].mes + 1, piso);
+                      const previo = i > 0 && !previoRecortado ? totalDe(meses[i - 1], vista) : null;
                       const variacion = variacionPct(total, previo);
                       return (
                         <tr key={m.clave}>
                           <th scope="row">
-                            {MESES_LARGOS[m.mes]}
+                            {rotulo(m, MESES_LARGOS[m.mes])}
                             {m.enCurso && (
                               <>
                                 {" "}
@@ -136,7 +157,7 @@ export function IngresosMensuales({
                               </>
                             )}
                           </th>
-                          {vista === "resumen" && (
+                          {vista === "resumen" && desglosar && (
                             <>
                               <td className="pn-der an-oculta-m">{formatoUsd(m.online)}</td>
                               <td className="pn-der an-oculta-m">{formatoUsd(m.tienda)}</td>
@@ -153,10 +174,11 @@ export function IngresosMensuales({
               </div>
                 </>
               )}
-              <p className="pn-subtitulo" style={{ marginTop: 12 }}>
-                Los envíos a SAINT se registran desde el 26/10/2026: los meses anteriores no tienen datos completos
-                {mesesOmitidos > 0 && primerMes ? ` y por eso la tabla empieza en ${primerMes.toLowerCase()}` : ""}.
-              </p>
+              {piso !== null && mesesOmitidos > 0 && primerMes && (
+                <p className="pn-subtitulo" style={{ marginTop: 12 }}>
+                  {TEXTO_INICIO_PANELES} y por eso la tabla empieza en {primerMes.toLowerCase()}.
+                </p>
+              )}
             </section>
           );
         }}

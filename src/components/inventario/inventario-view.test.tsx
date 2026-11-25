@@ -597,3 +597,51 @@ describe("InventarioView — tarjeta «Con foto» y notas de los totales", () =>
     expect(container.querySelectorAll(".cli-stats > .cli-stat")).toHaveLength(7);
   });
 });
+
+/**
+ * 21/11/2026: desde el 19/11 la lectura del BCV falló dos días y la tarjeta de la tasa
+ * seguía diciendo "Con la que se calculan los bolívares". Con `alerta` (más de 8 h sin
+ * una lectura buena) la nota dice desde cuándo y la tarjeta se marca como vieja.
+ */
+describe("InventarioView — tarjeta «Tasa BCV» con alerta de lectura", () => {
+  function pintarTasa(alerta?: { desde: string | null; ultimoError: string | null } | null) {
+    render(
+      <InventarioView
+        currentAgent={ASESOR}
+        products={[]}
+        total={0}
+        totals={{ productos: 10, activos: 10, agotados: 0, bajos: 0, withoutWeight: 0, conFoto: 0, updatedAt: haceDias(0) }}
+        catalog={CATALOGO}
+        params={{ query: "", filter: "todos", sort: "nombre", page: 1 }}
+        bcvRate={{ rate: 791.3248, rateDate: "2026-08-27", isStale: false, alerta }}
+      />
+    );
+    return screen.getByText("Tasa BCV").closest(".cli-stat") as HTMLElement;
+  }
+
+  it("sin alerta, la nota y la tarjeta quedan como siempre", () => {
+    const tarjeta = pintarTasa();
+    expect(tarjeta).toHaveTextContent("Del 27 ago.. Con la que se calculan los bolívares.");
+    expect(tarjeta.hasAttribute("data-stale")).toBe(false);
+    expect(tarjeta.hasAttribute("title")).toBe(false);
+  });
+
+  it("con alerta y fecha: dice desde cuándo, marca la tarjeta y deja el último error en el title", () => {
+    const tarjeta = pintarTasa({ desde: "2026-11-18T22:00:00.000Z", ultimoError: "certificado vencido" });
+    expect(tarjeta).toHaveTextContent(
+      "Sin actualizar desde 18 nov., 6:00 p. m.: los bolívares y los dólares BCV pueden no estar al día."
+    );
+    expect(tarjeta).toHaveAttribute("data-stale", "true");
+    expect(tarjeta).toHaveAttribute("data-alerta", "true");
+    expect(tarjeta).toHaveAttribute("title", "certificado vencido");
+  });
+
+  it("con alerta sin fecha: dice que no hay lecturas buenas registradas", () => {
+    const tarjeta = pintarTasa({ desde: null, ultimoError: null });
+    expect(tarjeta).toHaveTextContent(
+      "Sin lecturas buenas del BCV registradas: los bolívares y los dólares BCV pueden no estar al día."
+    );
+    expect(tarjeta).toHaveAttribute("data-stale", "true");
+    expect(tarjeta.hasAttribute("title")).toBe(false);
+  });
+});

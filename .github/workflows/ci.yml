@@ -649,6 +649,30 @@ jobs:
       - name: sombra_consumo_y_preparacion -- consumo por dia y preparacion para desplegar
         run: |
           psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/sombra_consumo_y_preparacion.sql
+      # 20261122010000 (22/11/2026): panel_ventas_activas con ventana de 48 h y
+      # desglose por origen, equipo (rol de quien lo armó, distinto de `canal`) y
+      # ventana de WhatsApp. Vacía presupuestos y carritos dentro de su transacción
+      # (rollback) para que las cuentas sean exactas; las fronteras de 21/25 h y
+      # 47/49 h salen exactas porque `now()` es constante en la transacción.
+      - name: paneles_ventas_activas -- ventana de 48 h, origen, equipo y ventana de WhatsApp
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/paneles_ventas_activas.sql
+
+      # 20261121020000 (21/11/2026): el piso de datos de los paneles. Pedir desde
+      # antes del lunes 16/11/2026 es pedir desde el piso (jsonb idéntico, también
+      # cuando cambia la granularidad o se excedían los 92 días), un rango entero
+      # anterior da la forma vacía del contrato, las firmas no cambian (A1) y la
+      # historia anterior al piso sigue contando para "regresan" y los duplicados.
+      - name: paneles_inicio -- piso de datos de los paneles (16/11/2026)
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/paneles_inicio.sql
+
+      # 20261121010000 (21/11/2026): el estado de la lectura de la tasa BCV. La
+      # RPC suma y reinicia el contador de fallos de forma atómica, solo
+      # service_role la ejecuta, y agentes/caja leen la fila sin poder escribirla.
+      - name: bcv_fetch_status -- estado de la lectura BCV y permisos
+        run: |
+          psql "postgresql://postgres:postgres@127.0.0.1:54322/postgres"             -v ON_ERROR_STOP=1             -f supabase/tests/bcv_fetch_status.sql
 
       # A2 T7, plan "Seba no cotiza lo que no es" (30/9/2026): el ARNÉS del
       # catálogo. Corre el `buildCatalogTool` REAL de Seba sobre los ~149 casos de

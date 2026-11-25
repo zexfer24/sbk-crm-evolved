@@ -370,11 +370,21 @@ describe("las entradas de los paneles arrastran período y canal", () => {
 
   it("la barra superior hace lo mismo que el rail", () => {
     ubicacion.ruta = "/panel/analiticas";
-    ubicacion.consulta = "periodo=30d&vista=tienda";
+    ubicacion.consulta = "periodo=30d&vista=online";
     render(<AppTopNav active="analiticas" verPaneles />);
 
     expect(screen.getByText("Asesores").getAttribute("href")).toBe("/panel/asesores?periodo=30d");
-    expect(screen.getByText("Dashboard").getAttribute("href")).toBe("/panel?periodo=30d&vista=tienda");
+    expect(screen.getByText("Dashboard").getAttribute("href")).toBe("/panel?periodo=30d&vista=online");
+  });
+
+  // 21/11/2026 (D1): con el canal tienda oculto (`CANAL_TIENDA_VISIBLE = false`)
+  // un enlace viejo con `?vista=tienda` no arrastra un canal que no se pinta.
+  it("con la tienda oculta, ?vista=tienda no se arrastra a los otros paneles", () => {
+    ubicacion.ruta = "/panel/analiticas";
+    ubicacion.consulta = "periodo=30d&vista=tienda";
+    render(<AppTopNav active="analiticas" verPaneles />);
+
+    expect(screen.getByText("Dashboard").getAttribute("href")).toBe("/panel?periodo=30d");
   });
 
   it("sin verPaneles no lee la URL (un asesor no paga los hooks)", () => {

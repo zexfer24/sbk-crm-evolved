@@ -1,13 +1,16 @@
 import { exigirAccesoPaneles } from "../acceso-servidor";
 import { fetchBusinessHours, fetchLatestBcvRate } from "@/lib/data";
 import {
+  bloqueAntesDelInicio,
+  bloqueConTopeAntesDelInicio,
   fetchMetasVenta,
   fetchPanelConversaciones,
   fetchPanelVentas,
   fetchPanelVentasActivas,
 } from "@/lib/paneles-data";
 import { vistaDesdeParam } from "@/lib/paneles/canal";
-import { periodoDesdeParam } from "@/lib/paneles/periodos";
+import type { PanelConversaciones, PanelVentas } from "@/lib/paneles/parse";
+import { esRangoVacio, periodoDesdeParam } from "@/lib/paneles/periodos";
 import { rangosDeAnaliticas } from "@/lib/paneles/rangos";
 import { AnaliticasView } from "@/components/paneles/analiticas-view";
 import { primero, type ParametrosDePagina } from "../params";
@@ -19,6 +22,11 @@ import { primero, type ParametrosDePagina } from "../params";
  * Misma regla que el Dashboard: todo se lee acá, la vista no toca esta página,
  * y el rol se verifica antes de leer (`exigirAccesoPaneles`, 15/11/2026) además
  * de en el layout y en las RPC.
+ *
+ * 21/11/2026 (plan "Los paneles cuentan desde el lunes 16/11/2026"): igual que
+ * el Dashboard, un rango vacío (todo antes del piso de datos) no llama a su RPC
+ * y recibe `bloqueAntesDelInicio()`, y sin período previo comparable
+ * (`rangos.previo === null`) la vista recibe `null` en los dos previos.
  */
 export default async function PanelAnaliticasPage({ searchParams }: { searchParams: ParametrosDePagina }) {
   const { supabase } = await exigirAccesoPaneles();
@@ -28,6 +36,12 @@ export default async function PanelAnaliticasPage({ searchParams }: { searchPara
 
   const ahora = new Date();
   const rangos = rangosDeAnaliticas(periodo, ahora);
+  const leerVentas = (r: { desde: Date; hasta: Date }) =>
+    esRangoVacio(r) ? Promise.resolve(bloqueAntesDelInicio<PanelVentas>()) : fetchPanelVentas(supabase, r.desde, r.hasta);
+  const leerConversaciones = (r: { desde: Date; hasta: Date }) =>
+    esRangoVacio(r)
+      ? Promise.resolve(bloqueConTopeAntesDelInicio<PanelConversaciones>())
+      : fetchPanelConversaciones(supabase, r.desde, r.hasta);
   const [
     ventas,
     ventasPrevio,
@@ -40,12 +54,12 @@ export default async function PanelAnaliticasPage({ searchParams }: { searchPara
     horario,
     tasaBcv,
   ] = await Promise.all([
-    fetchPanelVentas(supabase, rangos.periodo.desde, rangos.periodo.hasta),
-    fetchPanelVentas(supabase, rangos.previo.desde, rangos.previo.hasta),
-    fetchPanelConversaciones(supabase, rangos.periodo.desde, rangos.periodo.hasta),
-    fetchPanelConversaciones(supabase, rangos.previo.desde, rangos.previo.hasta),
-    fetchPanelVentas(supabase, rangos.anio.desde, rangos.anio.hasta),
-    fetchPanelVentas(supabase, rangos.ultimos40.desde, rangos.ultimos40.hasta),
+    leerVentas(rangos.periodo),
+    rangos.previo === null ? Promise.resolve(null) : leerVentas(rangos.previo),
+    leerConversaciones(rangos.periodo),
+    rangos.previo === null ? Promise.resolve(null) : leerConversaciones(rangos.previo),
+    leerVentas(rangos.anio),
+    leerVentas(rangos.ultimos40),
     fetchPanelVentasActivas(supabase),
     fetchMetasVenta(supabase),
     fetchBusinessHours(supabase),

@@ -1,11 +1,13 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { DEFAULT_BUSINESS_HOURS } from "@/lib/business-hours";
+import { INICIO_PANELES } from "@/lib/paneles/periodos";
 import type { MetaVenta, PanelVentas } from "@/lib/paneles/parse";
 import {
   diasDeRendimiento,
   etapasDelEmbudo,
   etiquetaDeTramo,
   filtrarActivas,
+  type FiltroActivas,
   fraseDelEmbudo,
   horasDeAtencion,
   mesesDelAnio,
@@ -17,6 +19,9 @@ import {
   variacionPct,
   formatoEdad,
 } from "./datos";
+
+// Estos tests describen el canal «tienda» visible (D1, 21/11/2026: hoy está oculto); `tienda-oculta.test.tsx` cubre el caso oculto.
+vi.mock("@/lib/paneles/canal-config", () => ({ CANAL_TIENDA_VISIBLE: true }));
 
 /**
  * Plan "Paneles" (13/11/2026), C5: la aritmética de Analíticas, pura. Nada de
@@ -142,7 +147,14 @@ describe("horasDeAtencion", () => {
 
 describe("filtrarActivas", () => {
   const ahora = new Date("2026-11-15T12:00:00-04:00");
-  const item = (id: string, tipo: "presupuesto" | "carrito", canal: "online" | "tienda", desde: string) => ({
+  type Fila = Parameters<typeof filtrarActivas>[0][number];
+  const item = (
+    id: string,
+    tipo: "presupuesto" | "carrito",
+    canal: "online" | "tienda",
+    desde: string,
+    extra: Partial<Fila> = {}
+  ): Fila => ({
     tipo,
     id,
     canal,
@@ -151,18 +163,51 @@ describe("filtrarActivas", () => {
     monto: null,
     unidades: 1,
     desde,
+    origen: null,
+    equipo: null,
+    ventana: null,
+    ventana_hasta: null,
+    conversation_id: null,
+    ...extra,
   });
   const items = [
-    item("a", "presupuesto", "tienda", "2026-11-01T12:00:00-04:00"),
-    item("b", "carrito", "online", "2026-11-10T12:00:00-04:00"),
-    item("c", "carrito", "online", "2026-11-15T10:00:00-04:00"),
+    item("a", "presupuesto", "tienda", "2026-11-01T12:00:00-04:00", { origen: "presupuesto_inventario", equipo: "tienda", ventana: "no_aplica" }),
+    item("b", "carrito", "online", "2026-11-10T12:00:00-04:00", { origen: "carrito_chat", equipo: "online", ventana: "cerrada" }),
+    item("c", "carrito", "online", "2026-11-15T10:00:00-04:00", { origen: "carrito_chat", equipo: "online", ventana: "abierta" }),
+    // 13 h de antigüedad: pasa «+12 h» pero no «+24 h».
+    item("d", "presupuesto", "online", "2026-11-14T23:00:00-04:00", { origen: "presupuesto_chat", equipo: "sin_dato", ventana: "por_cerrar" }),
+    // Sin ningún dato nuevo (base vieja): nunca pasa un filtro de equipo ni de ventana.
+    item("e", "carrito", "online", "2026-11-15T11:00:00-04:00"),
   ];
-  it("filtra por tipo, canal y antigüedad", () => {
-    const ids = (f: Parameters<typeof filtrarActivas>[1]) => filtrarActivas(items, f, ahora).map((i) => i.id);
-    expect(ids({ tipo: "carrito", canal: "resumen", antiguedad: "todas" })).toEqual(["b", "c"]);
-    expect(ids({ tipo: "todos", canal: "tienda", antiguedad: "todas" })).toEqual(["a"]);
-    expect(ids({ tipo: "todos", canal: "resumen", antiguedad: "7d" })).toEqual(["a"]);
-    expect(ids({ tipo: "todos", canal: "resumen", antiguedad: "24h" })).toEqual(["a", "b"]);
+  const base: FiltroActivas = { tipo: "todos", canal: "resumen", equipo: "todos", ventana: "todas", antiguedad: "todas" };
+  const ids = (f: Partial<FiltroActivas>) => filtrarActivas(items, { ...base, ...f }, ahora).map((i) => i.id);
+
+  it("sin filtros deja pasar todo, también lo que no trae datos nuevos", () => {
+    expect(ids({})).toEqual(["a", "b", "c", "d", "e"]);
+  });
+  it("filtra por tipo y por canal", () => {
+    expect(ids({ tipo: "carrito" })).toEqual(["b", "c", "e"]);
+    expect(ids({ tipo: "presupuesto" })).toEqual(["a", "d"]);
+    expect(ids({ canal: "tienda" })).toEqual(["a"]);
+    expect(ids({ canal: "online" })).toEqual(["b", "c", "d", "e"]);
+  });
+  it("antigüedad: más viejo que 12 h o que 24 h", () => {
+    expect(ids({ antiguedad: "12h" })).toEqual(["a", "b", "d"]);
+    expect(ids({ antiguedad: "24h" })).toEqual(["a", "b"]);
+  });
+  it("equipo exige igualdad exacta; un ítem sin dato de equipo no pasa", () => {
+    expect(ids({ equipo: "online" })).toEqual(["b", "c"]);
+    expect(ids({ equipo: "tienda" })).toEqual(["a"]);
+  });
+  it("las ventanas son excluyentes: Abierta es solo abierta", () => {
+    expect(ids({ ventana: "abierta" })).toEqual(["c"]);
+    expect(ids({ ventana: "por_cerrar" })).toEqual(["d"]);
+    expect(ids({ ventana: "cerrada" })).toEqual(["b"]);
+  });
+  it("los filtros se combinan", () => {
+    expect(ids({ tipo: "carrito", equipo: "online", antiguedad: "24h" })).toEqual(["b"]);
+    expect(ids({ canal: "online", ventana: "cerrada", antiguedad: "12h" })).toEqual(["b"]);
+    expect(ids({ tipo: "presupuesto", equipo: "online" })).toEqual([]);
   });
 });
 
@@ -178,6 +223,83 @@ describe("mesesDelAnio", () => {
     expect(meses[8]).toMatchObject({ clave: "2026-09", online: 30, tienda: 5, envios: 4, enCurso: false });
     expect(meses[9]).toMatchObject({ clave: "2026-10", online: 0, tienda: 0, envios: 0 });
     expect(meses[10]).toMatchObject({ clave: "2026-11", enCurso: true, online: 7 });
+  });
+});
+
+describe("rendimiento con el piso del 16/11/2026", () => {
+  const metas: MetaVenta[] = [{ canal: "online", vigente_desde: "2026-10-01", monto_usd: 100 }];
+  const fila = (dia: string, online: number) => ({
+    t: `${dia}T00:00:00-04:00`,
+    online,
+    tienda: 0,
+    envios_online: online > 0 ? 1 : 0,
+    envios_tienda: 0,
+  });
+  // Lunes 16/11 a viernes 20/11, y hoy sábado 21/11 (cerrado).
+  const serie = [
+    fila("2026-11-16", 150),
+    fila("2026-11-17", 50),
+    fila("2026-11-18", 120),
+    fila("2026-11-19", 130),
+    fila("2026-11-20", 80),
+    fila("2026-11-21", 0),
+  ];
+  const base = { serie, metas, vista: "online" as const, horario: DEFAULT_BUSINESS_HOURS, hoy: "2026-11-21" };
+
+  it("los días hábiles anteriores al piso salen «sin_datos», sin meta ni monto", () => {
+    const dias = diasDeRendimiento({ ...base, piso: INICIO_PANELES });
+    const anteriores = dias.filter((d) => d.estado === "sin_datos");
+    // 10/11 a 13/11 son martes a viernes: hábiles y anteriores al piso. 14 y 15 son fin de semana y no salen.
+    expect(anteriores.map((d) => d.dia)).toEqual(expect.arrayContaining(["2026-11-10", "2026-11-11", "2026-11-12", "2026-11-13"]));
+    expect(anteriores.map((d) => d.dia)).not.toContain("2026-11-14");
+    expect(anteriores.map((d) => d.dia)).not.toContain("2026-11-15");
+    for (const d of anteriores) {
+      expect(d.logrado).toBeNull();
+      expect(d.meta).toBeNull();
+      expect(d.cumplida).toBeNull();
+      expect(d.enCurso).toBe(false);
+    }
+  });
+
+  it("del 16/11 en adelante se evalúan como siempre", () => {
+    const dias = diasDeRendimiento({ ...base, piso: INICIO_PANELES });
+    const evaluados = dias.filter((d) => d.estado === "evaluado");
+    expect(evaluados.map((d) => d.dia)).toEqual(["2026-11-16", "2026-11-17", "2026-11-18", "2026-11-19", "2026-11-20"]);
+    expect(evaluados.map((d) => d.cumplida)).toEqual([true, false, true, true, false]);
+  });
+
+  it("el resumen no cuenta los días sin datos: ni cumplidas, ni evaluadas, ni racha, ni mejor día", () => {
+    const dias = diasDeRendimiento({ ...base, piso: INICIO_PANELES });
+    expect(resumenDeRendimiento(dias)).toEqual({
+      racha: 0,
+      mejor: { dia: "2026-11-16", logrado: 150 },
+      cumplidas: 3,
+      evaluadas: 5,
+    });
+  });
+
+  it("un día anterior al piso con ventas en la serie sigue siendo «sin datos»", () => {
+    const conViejo = [fila("2026-11-13", 9999), ...serie];
+    const dias = diasDeRendimiento({ ...base, serie: conViejo, piso: INICIO_PANELES });
+    expect(dias.find((d) => d.dia === "2026-11-13")?.estado).toBe("sin_datos");
+    expect(resumenDeRendimiento(dias).mejor).toEqual({ dia: "2026-11-16", logrado: 150 });
+  });
+
+  it("el calendario sigue ordenado por día y respeta el tope", () => {
+    const dias = diasDeRendimiento({ ...base, piso: INICIO_PANELES, max: 30 });
+    expect(dias.length).toBeLessThanOrEqual(30);
+    expect(dias.map((d) => d.dia)).toEqual([...dias.map((d) => d.dia)].sort());
+  });
+
+  it("sin piso no inventa días sin datos", () => {
+    const dias = diasDeRendimiento({ ...base });
+    expect(dias.some((d) => d.estado === "sin_datos")).toBe(false);
+  });
+
+  it("con el reloj antes del piso, ningún día se evalúa y todos los hábiles salen sin datos", () => {
+    const dias = diasDeRendimiento({ ...base, serie: [], hoy: "2026-11-13", piso: INICIO_PANELES });
+    expect(dias.length).toBeGreaterThan(0);
+    expect(dias.every((d) => d.estado === "sin_datos")).toBe(true);
   });
 });
 
